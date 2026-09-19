@@ -17,6 +17,10 @@ export const products = pgTable('products', {
   price: integer('price').notNull().default(0), // centavos
   originalPrice: integer('original_price').notNull().default(0), // centavos, 0 = sin descuento
   stock: integer('stock').notNull().default(0),
+  // Costo promedio ponderado por unidad, en centavos. Se recalcula solo
+  // cada vez que se registra una compra (ver tabla `purchases`): no se
+  // edita a mano desde el formulario del producto.
+  cost: integer('cost').notNull().default(0),
   image: text('image').notNull().default(''),
   featured: boolean('featured').notNull().default(false), // pestaña Destacados
   isNew: boolean('is_new').notNull().default(false), // pestaña Nuevos
@@ -57,7 +61,10 @@ export const orders = pgTable('orders', {
   email: text('email').notNull().default(''),
   phone: text('phone').notNull().default(''),
   address: text('address').notNull().default(''),
-  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number }>>(),
+  // `cost` es el costo promedio del producto en el momento de la venta
+  // (copia, no referencia) — así la Ganancia de un pedido ya hecho no
+  // cambia si más adelante compras ese mismo producto a otro costo.
+  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number }>>(),
   total: integer('total').notNull(),
   status: text('status').notNull().default('Pendiente'), // Pendiente, Confirmado, Preparando, Enviado, Entregado, Cancelado
   paymentStatus: text('payment_status').notNull().default('Pendiente'), // Pendiente, Pagado
@@ -84,8 +91,46 @@ export const imageTrash = pgTable('image_trash', {
 // ───────────────────────────────────────────────────────────────────────
 // CONTENIDO DEL SITIO (editor de textos e imágenes desde el admin: marca,
 // WhatsApp, dirección, horario, redes sociales, textos del hero, etc.)
+// También guarda aquí 2 valores de configuración de Finanzas
+// (`capitalInicial`, `reinvestPercent`) reutilizando esta misma tabla
+// clave-valor en vez de crear una tabla de un solo renglón.
 // ───────────────────────────────────────────────────────────────────────
 export const content = pgTable('content', {
   key: text('key').primaryKey(),
   value: text('value').notNull().default(''),
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// COMPRAS — cada reposición de inventario. Reemplaza la hoja "Inventario"
+// del Excel: en vez de una fila nueva a mano, cada compra aquí (a) suma
+// `quantity` al stock del producto y (b) recalcula `products.cost` como
+// costo promedio ponderado. Es un libro de solo lectura una vez creado
+// (no se edita ni se borra) para que el historial de costos nunca quede
+// inconsistente — si hay un error, se corrige con otra compra o, si es
+// necesario, a mano en la base de datos.
+// ───────────────────────────────────────────────────────────────────────
+export const purchases = pgTable('purchases', {
+  id: serial('id').primaryKey(),
+  productId: integer('product_id').notNull(),
+  productName: text('product_name').notNull(), // copia del nombre, por si el producto se borra después
+  quantity: integer('quantity').notNull(),
+  unitCost: integer('unit_cost').notNull(), // centavos
+  totalCost: integer('total_cost').notNull(), // centavos = quantity * unitCost
+  notes: text('notes').notNull().default(''),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// GASTOS — reemplaza la hoja "Gastos". `type` separa gasto del negocio
+// (se resta de la ganancia antes de calcular la reinversión) de gasto o
+// retiro personal (se resta de lo que ya le toca a Yeilin, no afecta la
+// ganancia del negocio). Esto reemplaza la mezcla confusa de "Gastos" y
+// "gastos personales" que tenía el Excel.
+// ───────────────────────────────────────────────────────────────────────
+export const expenses = pgTable('expenses', {
+  id: serial('id').primaryKey(),
+  type: text('type').notNull().default('negocio'), // 'negocio' | 'personal'
+  description: text('description').notNull(),
+  amount: integer('amount').notNull(), // centavos
+  createdAt: timestamp('created_at').notNull().defaultNow(),
 })

@@ -3,26 +3,39 @@ import type { ChangeEvent, ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   AlertTriangle, Check, ChevronLeft, LayoutDashboard, ListOrdered, LogOut, Package,
-  Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users, X,
+  Pencil, Plus, RotateCcw, Search, ShoppingBag, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
-  CATEGORIES, checkSession, deleteCustomer, deleteOrder, deleteProduct, getAdminData,
-  login, logout, purgeCustomer, purgeOrder, purgeProduct, restoreCustomer, restoreOrder,
-  restoreProduct, saveContent, saveCustomer, saveProduct, updateOrderStatus,
+  CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deleteProduct,
+  getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
+  recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
+  saveProduct, updateOrderStatus,
 } from '@/lib/store'
 
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
 const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 
-type Product = { id: number; name: string; category: string; description: string; price: number; originalPrice: number; stock: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
-type OrderItem = { id: number; name: string; price: number; quantity: number }
+type Product = { id: number; name: string; category: string; description: string; price: number; originalPrice: number; stock: number; cost: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
-type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
+type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; notes: string; createdAt: string }
+type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
+type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
 type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
-type Tab = 'resumen' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
+type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
+type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
+type Tab = 'resumen' | 'finanzas' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
+
+function emptyPurchaseDraft(): PurchaseDraft {
+  return { productId: '', quantity: '1', unitCost: '', notes: '' }
+}
+
+function emptyExpenseDraft(): ExpenseDraft {
+  return { type: 'negocio', description: '', amount: '' }
+}
 
 const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
 const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
@@ -106,11 +119,18 @@ export function AdminPanel() {
   const [editing, setEditing] = useState<ProductDraft | null>(null)
   const [editingCustomer, setEditingCustomer] = useState<CustomerDraft | null>(null)
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({})
+  const [editingPurchase, setEditingPurchase] = useState<PurchaseDraft | null>(null)
+  const [editingExpense, setEditingExpense] = useState<ExpenseDraft | null>(null)
+  const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
 
   async function refresh() {
     const adminData = await getAdminData()
     setData(adminData as unknown as AdminData)
     setContentDraft(adminData.content)
+    setFinanceSettings({
+      capitalInicial: String(Number(adminData.content.capitalInicial || 0) / 100),
+      reinvestPercent: String(Number(adminData.content.reinvestPercent ?? 70)),
+    })
   }
 
   useEffect(() => {
@@ -205,6 +225,40 @@ export function AdminPanel() {
     await withBusy(() => saveContent({ data: contentDraft }))
   }
 
+  async function handleSavePurchase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!editingPurchase) return
+    await withBusy(async () => {
+      await recordPurchase({ data: {
+        productId: Number(editingPurchase.productId),
+        quantity: Math.round(Number(editingPurchase.quantity || 0)),
+        unitCost: Math.round(Number(editingPurchase.unitCost || 0) * 100),
+        notes: editingPurchase.notes,
+      } })
+      setEditingPurchase(null)
+    })
+  }
+
+  async function handleSaveExpense(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!editingExpense) return
+    await withBusy(async () => {
+      await recordExpense({ data: {
+        type: editingExpense.type,
+        description: editingExpense.description,
+        amount: Math.round(Number(editingExpense.amount || 0) * 100),
+      } })
+      setEditingExpense(null)
+    })
+  }
+
+  async function handleSaveFinanceSettings() {
+    await withBusy(() => saveContent({ data: {
+      capitalInicial: String(Math.round(Number(financeSettings.capitalInicial || 0) * 100)),
+      reinvestPercent: String(Math.min(100, Math.max(0, Math.round(Number(financeSettings.reinvestPercent || 0))))),
+    } }))
+  }
+
   if (authenticated === null) return <div className="admin-loading">Cargando…</div>
 
   if (!authenticated) {
@@ -232,8 +286,29 @@ export function AdminPanel() {
   const outOfStock = data.products.filter((product) => product.stock === 0).length
   const trashTotal = data.trash.products.length + data.trash.orders.length + data.trash.customers.length + data.trash.images.length
 
+  // Finanzas: todo se calcula a partir de pedidos pagados + compras +
+  // gastos registrados, igual espíritu que el "Resumen" del Excel de
+  // Yeilin pero automático. `cost` en cada item del pedido es una copia
+  // del costo promedio del producto al momento de la venta.
+  const paidOrders = data.orders.filter((order) => order.paymentStatus === 'Pagado')
+  const ingresos = paidOrders.reduce((sum, order) => sum + order.total, 0)
+  const costoVentas = paidOrders.reduce((sum, order) => sum + order.items.reduce((s, item) => s + item.cost * item.quantity, 0), 0)
+  const gananciaBruta = ingresos - costoVentas
+  const capitalUsado = data.purchases.reduce((sum, purchase) => sum + purchase.totalCost, 0)
+  const capitalRecuperado = costoVentas
+  const capitalInicial = Number(data.content.capitalInicial || 0)
+  const capitalDisponible = capitalInicial - capitalUsado + capitalRecuperado
+  const gastosNegocio = data.expenses.filter((expense) => expense.type === 'negocio').reduce((sum, expense) => sum + expense.amount, 0)
+  const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount, 0)
+  const gananciaNeta = gananciaBruta - gastosNegocio
+  const reinvestPercent = Number(data.content.reinvestPercent ?? 70)
+  const reinversion = Math.round((gananciaNeta * reinvestPercent) / 100)
+  const paraTi = gananciaNeta - reinversion
+  const disponibleRetirar = paraTi - gastosPersonales
+
   const TABS: Array<{ id: Tab; label: string; icon: ComponentType<{ size?: number }> }> = [
     { id: 'resumen', label: 'Resumen', icon: LayoutDashboard },
+    { id: 'finanzas', label: 'Finanzas', icon: Wallet },
     { id: 'catalogo', label: 'Catálogo', icon: Package },
     { id: 'pedidos', label: 'Pedidos', icon: ListOrdered },
     { id: 'clientes', label: 'Clientes', icon: Users },
@@ -279,6 +354,73 @@ export function AdminPanel() {
           </section>
         )}
 
+        {tab === 'finanzas' && (
+          <section>
+            <div className="admin-section-head">
+              <h2>Finanzas</h2>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="primary-button" onClick={() => setEditingExpense(emptyExpenseDraft())}><Plus size={16} />Registrar gasto</button>
+                <button className="primary-button" onClick={() => setEditingPurchase(emptyPurchaseDraft())}><ShoppingBag size={16} />Registrar compra</button>
+              </div>
+            </div>
+
+            <div className="content-group">
+              <h3>Configuración</h3>
+              <div className="form-row">
+                <label className="content-field"><span>Capital inicial (RD$)</span><input type="number" min={0} step="0.01" value={financeSettings.capitalInicial} onChange={(event) => setFinanceSettings((current) => ({ ...current, capitalInicial: event.target.value }))} /></label>
+                <label className="content-field"><span>% que se reinvierte</span><input type="number" min={0} max={100} value={financeSettings.reinvestPercent} onChange={(event) => setFinanceSettings((current) => ({ ...current, reinvestPercent: event.target.value }))} /></label>
+              </div>
+              <button className="primary-button" disabled={busy} onClick={handleSaveFinanceSettings}><Check size={16} />{busy ? 'Guardando…' : 'Guardar configuración'}</button>
+            </div>
+
+            <h3>Capital</h3>
+            <div className="admin-cards">
+              <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
+              <div className="admin-card"><span>Capital usado (compras)</span><strong>{money(capitalUsado)}</strong></div>
+              <div className="admin-card"><span>Capital recuperado (ventas)</span><strong>{money(capitalRecuperado)}</strong></div>
+              <div className="admin-card"><span>Capital disponible</span><strong>{money(capitalDisponible)}</strong></div>
+            </div>
+
+            <h3>Ventas y ganancia</h3>
+            <div className="admin-cards">
+              <div className="admin-card"><span>Ingresos (pedidos pagados)</span><strong>{money(ingresos)}</strong></div>
+              <div className="admin-card"><span>Costo de ventas</span><strong>{money(costoVentas)}</strong></div>
+              <div className="admin-card"><span>Ganancia bruta</span><strong>{money(gananciaBruta)}</strong></div>
+              <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
+              <div className="admin-card"><span>Ganancia neta</span><strong>{money(gananciaNeta)}</strong></div>
+              <div className="admin-card"><span>Reinversión ({reinvestPercent}%)</span><strong>{money(reinversion)}</strong></div>
+              <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
+              <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
+            </div>
+            <div className="admin-cards">
+              <div className="admin-card"><span>Disponible para retirar</span><strong>{money(disponibleRetirar)}</strong></div>
+            </div>
+            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" en Pedidos. Un pedido "Pendiente" todavía no mueve el capital.</p>
+
+            <h3>Compras recientes</h3>
+            <div className="admin-table">
+              {data.purchases.slice(0, 15).map((purchase) => <div className="admin-row" key={purchase.id}>
+                <div><strong>{purchase.productName}</strong><span>{purchase.quantity} × {money(purchase.unitCost)} · {dateFmt(purchase.createdAt)}{purchase.notes ? ` · ${purchase.notes}` : ''}</span></div>
+                <strong>{money(purchase.totalCost)}</strong>
+              </div>)}
+              {!data.purchases.length && <p className="admin-empty">Todavía no has registrado compras.</p>}
+            </div>
+
+            <h3>Gastos recientes</h3>
+            <div className="admin-table">
+              {data.expenses.slice(0, 15).map((expense) => <div className="admin-row" key={expense.id}>
+                <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}</span></div>
+                <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : 'Personal'}</span>
+                <strong>{money(expense.amount)}</strong>
+                <div className="admin-row-actions">
+                  <button onClick={() => { if (window.confirm('¿Borrar este gasto?')) withBusy(() => deleteExpense({ data: expense.id })) }}><Trash2 size={15} /></button>
+                </div>
+              </div>)}
+              {!data.expenses.length && <p className="admin-empty">Todavía no has registrado gastos.</p>}
+            </div>
+          </section>
+        )}
+
         {tab === 'catalogo' && (
           <section>
             <div className="admin-section-head">
@@ -289,7 +431,7 @@ export function AdminPanel() {
             <div className="admin-table">
               {filteredProducts.map((product) => <div className="admin-row admin-row-product" key={product.id}>
                 <img src={product.image || '/logo.png'} alt="" />
-                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock{!product.active && ' · Oculto'}</span></div>
+                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}</span></div>
                 <div className="admin-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<strong>{money(product.price)}</strong></div>
                 <div className="admin-row-actions">
                   <button onClick={() => setEditing(toDraft(product))}><Pencil size={15} /></button>
@@ -458,6 +600,44 @@ export function AdminPanel() {
           <label>Notas<textarea rows={3} value={editingCustomer.notes} onChange={(event) => setEditingCustomer((current) => current && { ...current, notes: event.target.value })} /></label>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar cliente'}</button>
+        </form>
+      </div></div>}
+
+      {editingPurchase && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setEditingPurchase(null)}><X /></button>
+        <h2>Registrar compra</h2>
+        <p>Suma al stock del producto y recalcula su costo promedio. No se puede editar ni borrar después — si te equivocas, registra otra compra que lo corrija.</p>
+        <form className="product-form" onSubmit={handleSavePurchase}>
+          <label>Producto
+            <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...current, productId: event.target.value })}>
+              <option value="" disabled>Selecciona un producto</option>
+              {data.products.map((product) => <option key={product.id} value={product.id}>{product.name} (stock actual: {product.stock})</option>)}
+            </select>
+          </label>
+          <div className="form-row">
+            <label>Cantidad comprada<input required type="number" min={1} value={editingPurchase.quantity} onChange={(event) => setEditingPurchase((current) => current && { ...current, quantity: event.target.value })} /></label>
+            <label>Costo por unidad (RD$)<input required type="number" min={0} step="0.01" value={editingPurchase.unitCost} onChange={(event) => setEditingPurchase((current) => current && { ...current, unitCost: event.target.value })} /></label>
+          </div>
+          <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
+        </form>
+      </div></div>}
+
+      {editingExpense && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setEditingExpense(null)}><X /></button>
+        <h2>Registrar gasto</h2>
+        <form className="product-form" onSubmit={handleSaveExpense}>
+          <label>Tipo
+            <select value={editingExpense.type} onChange={(event) => setEditingExpense((current) => current && { ...current, type: event.target.value as 'negocio' | 'personal' })}>
+              <option value="negocio">Gasto del negocio (resta de la ganancia)</option>
+              <option value="personal">Gasto o retiro personal (resta de lo tuyo)</option>
+            </select>
+          </label>
+          <label>Descripción<input required value={editingExpense.description} onChange={(event) => setEditingExpense((current) => current && { ...current, description: event.target.value })} placeholder="Ej. transporte, comida, retiro..." /></label>
+          <label>Monto (RD$)<input required type="number" min={0} step="0.01" value={editingExpense.amount} onChange={(event) => setEditingExpense((current) => current && { ...current, amount: event.target.value })} /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar gasto'}</button>
         </form>
       </div></div>}
     </div>

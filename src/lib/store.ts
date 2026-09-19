@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { env } from 'cloudflare:workers'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { content, customers, imageTrash, orders, products } from '../../db/schema'
+import { content, customers, expenses, imageTrash, orders, products, purchases } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail } from './email'
 import { deleteImageFile, pathFromDownloadUrl } from './github'
@@ -49,6 +49,10 @@ const defaultContent: Record<string, string> = {
   cartTitle: 'Tu carrito',
   checkoutTitle: 'Completa tu pedido',
   notificationEmail: '',
+  // Configuración de Finanzas (se editan desde el tab Finanzas, no desde
+  // Contenido). capitalInicial en centavos; reinvestPercent de 0 a 100.
+  capitalInicial: '0',
+  reinvestPercent: '70',
 }
 
 // Productos de ejemplo para que la tienda no se vea vacía en el primer
@@ -82,6 +86,16 @@ function makeFolio(prefix: string) {
   const fecha = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`
   const rand = pad(Math.floor(Math.random() * 10000), 4)
   return `${prefix}-${fecha}-${rand}`
+}
+
+/** Nuevo costo promedio ponderado (centavos) al sumar `addQty` unidades
+ * compradas a `addUnitCost` c/u, a un producto con `prevStock` unidades
+ * que ya costaban `prevCost` c/u. Si no había stock previo (producto
+ * nuevo o agotado), el promedio es simplemente el costo de esta compra. */
+function weightedAverageCost(prevStock: number, prevCost: number, addQty: number, addUnitCost: number) {
+  const totalQty = prevStock + addQty
+  if (totalQty <= 0) return addUnitCost
+  return Math.round((prevStock * prevCost + addQty * addUnitCost) / totalQty)
 }
 
 async function ensureSeeded() {
@@ -189,7 +203,7 @@ export const createOrder = createServerFn({ method: 'POST' })
       const product = productRows.find((row) => row.id === item.productId)
       if (!product) throw new Error(`El producto ${item.name} ya no está disponible.`)
       if (product.stock < item.quantity) throw new Error(`Stock insuficiente para ${item.name}.`)
-      return { id: product.id, name: product.name, price: product.price, quantity: item.quantity }
+      return { id: product.id, name: product.name, price: product.price, quantity: item.quantity, cost: product.cost }
     })
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -216,11 +230,13 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
   await requireAdmin()
   await ensureSeeded()
   await cleanupExpired()
-  const [productRows, orderRows, customerRows, contentRows, trashedProducts, trashedOrders, trashedCustomers, trashedImages] = await Promise.all([
+  const [productRows, orderRows, customerRows, contentRows, purchaseRows, expenseRows, trashedProducts, trashedOrders, trashedCustomers, trashedImages] = await Promise.all([
     db.select().from(products).where(isNull(products.deletedAt)).orderBy(desc(products.createdAt)),
     db.select().from(orders).where(isNull(orders.deletedAt)).orderBy(desc(orders.createdAt)),
     db.select().from(customers).where(isNull(customers.deletedAt)).orderBy(desc(customers.createdAt)),
     db.select().from(content),
+    db.select().from(purchases).orderBy(desc(purchases.createdAt)),
+    db.select().from(expenses).orderBy(desc(expenses.createdAt)),
     db.select().from(products).where(isNotNull(products.deletedAt)).orderBy(desc(products.deletedAt)),
     db.select().from(orders).where(isNotNull(orders.deletedAt)).orderBy(desc(orders.deletedAt)),
     db.select().from(customers).where(isNotNull(customers.deletedAt)).orderBy(desc(customers.deletedAt)),
@@ -231,6 +247,8 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
     orders: orderRows,
     customers: customerRows,
     content: Object.fromEntries(contentRows.map((item) => [item.key, item.value])),
+    purchases: purchaseRows,
+    expenses: expenseRows,
     trash: { products: trashedProducts, orders: trashedOrders, customers: trashedCustomers, images: trashedImages },
   }
 })
@@ -346,5 +364,52 @@ export const restoreCustomer = createServerFn({ method: 'POST' }).inputValidator
 export const purgeCustomer = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
   await db.delete(customers).where(eq(customers.id, data))
+  return true
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// ADMIN — Finanzas (compras y gastos)
+// ───────────────────────────────────────────────────────────────────────
+
+// Registra una compra/reposición de inventario: suma el stock del
+// producto y recalcula su costo promedio ponderado. Es un libro de solo
+// lectura una vez creado — no hay editar/borrar, así el historial de
+// costos nunca queda inconsistente (si hay un error, se registra otra
+// compra que lo ajuste).
+export const recordPurchase = createServerFn({ method: 'POST' })
+  .inputValidator((data: { productId: number; quantity: number; unitCost: number; notes: string }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    const quantity = Math.round(data.quantity)
+    const unitCost = Math.max(0, Math.round(data.unitCost))
+    if (quantity <= 0) throw new Error('La cantidad debe ser mayor a 0.')
+    const [product] = await db.select().from(products).where(eq(products.id, data.productId)).limit(1)
+    if (!product) throw new Error('Ese producto ya no existe.')
+
+    const newCost = weightedAverageCost(product.stock, product.cost, quantity, unitCost)
+    await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
+    await db.insert(purchases).values({ productId: product.id, productName: product.name, quantity, unitCost, totalCost: quantity * unitCost, notes: data.notes.trim() })
+    return true
+  })
+
+// Registra un gasto del negocio o un gasto/retiro personal. `type`
+// 'negocio' se resta de la ganancia antes de calcular la reinversión;
+// 'personal' se resta de lo que ya le corresponde a Yeilin, sin tocar la
+// ganancia del negocio.
+export const recordExpense = createServerFn({ method: 'POST' })
+  .inputValidator((data: { type: 'negocio' | 'personal'; description: string; amount: number }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    const description = data.description.trim()
+    const amount = Math.max(0, Math.round(data.amount))
+    if (!description) throw new Error('Escribe una descripción del gasto.')
+    if (amount <= 0) throw new Error('El monto debe ser mayor a 0.')
+    await db.insert(expenses).values({ type: data.type === 'personal' ? 'personal' : 'negocio', description, amount })
+    return true
+  })
+
+export const deleteExpense = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
+  await requireAdmin()
+  await db.delete(expenses).where(eq(expenses.id, data))
   return true
 })
