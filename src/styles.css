@@ -276,18 +276,6 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .footer-bottom p a { color: var(--ink-dim); font-weight: 600; }
 .footer-bottom p a:hover { color: var(--blue-400); }
 
-/* Insignia de crédito "GADR Net" — coherente con las demás webs de Alexx. */
-.gadr-credit { display: flex; align-items: center; gap: 10px; opacity: .85; }
-.gadr-credit:hover { opacity: 1; }
-.gadr-credit-text { font-size: 11px; color: var(--ink-faint); }
-.gadr-mark { display: flex; align-items: center; gap: 6px; }
-.gadr-mark-icon {
-  position: relative; width: 26px; height: 26px; border-radius: 8px; background: var(--navy-700);
-  display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; color: var(--blue-400);
-}
-.gadr-mark-icon i { position: absolute; inset: -1px; border-radius: 8px; border: 1px solid rgba(96,165,250,0.4); }
-.gadr-mark-word { font-weight: 900; font-size: 13px; color: var(--ink); letter-spacing: 0.02em; }
-.gadr-mark-word small { color: var(--blue-400); font-weight: 800; margin-left: 2px; }
 
 /* ─── Barra de navegación móvil (fija abajo) ─── */
 .mobile-tabbar {
@@ -530,3 +518,16 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .share-icon-badge.instagram { background: linear-gradient(135deg, #f58529, #dd2a7b, #8134af, #515bd4); }
 .share-icon-badge.messenger { background: #006AFF; }
 .share-icon-badge.copy { background: rgba(255,255,255,0.1); color: var(--ink); }
+
+/* Insignia de crédito "GADR Net" — colores fijos de marca, iguales en todas las webs. */
+.gadr-credit { display: flex; flex-direction: column; align-items: center; gap: 10px; text-decoration: none; opacity: .85; transition: opacity .25s ease; }
+.gadr-credit:hover { opacity: 1; }
+.gadr-credit-text { font-size: 11px; color: var(--ink-faint); text-align: center; }
+.gadr-mark {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1;
+  width: 64px; height: 64px; border-radius: 50%; background: #F2EDDC; flex-shrink: 0; padding: 6px;
+}
+.gadr-mark-icon { position: relative; font: 700 17px/1 'Segoe UI', monospace; letter-spacing: -1px; color: #3D4632; }
+.gadr-mark-icon i { position: absolute; top: -5px; right: -8px; width: 5px; height: 5px; border-radius: 50%; background: #B2603C; }
+.gadr-mark-word { display: block; font-weight: 900; font-size: 13px; letter-spacing: 0.02em; color: #16150F; text-align: center; margin-top: 3px; }
+.gadr-mark-word small { display: block; font-weight: 700; font-size: 7px; letter-spacing: 0.22em; color: #7E8A70; margin-top: 1px; }
