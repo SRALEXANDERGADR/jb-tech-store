@@ -490,3 +490,41 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 @media (prefers-reduced-motion: reduce) {
   .reveal { opacity: 1; transform: none; transition: none; }
 }
+
+/* ─── Botón de compartir (popover) ─── */
+.share-wrap { position: relative; }
+.icon-button-sm { width: 36px; height: 36px; }
+
+.share-popover {
+  position: absolute; top: calc(100% + 12px); right: 0; z-index: 55;
+  width: 210px; background: var(--navy-800); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lift);
+  padding: 8px; display: flex; flex-direction: column; gap: 2px;
+  transform-origin: top right;
+  opacity: 0; transform: scale(0.9) translateY(-6px);
+  transition: opacity .45s cubic-bezier(.22,.9,.32,1), transform .45s cubic-bezier(.22,.9,.32,1);
+}
+.share-popover::before {
+  content: ''; position: absolute; top: -6px; right: 14px; width: 12px; height: 12px;
+  background: var(--navy-800); border-left: 1px solid rgba(255,255,255,0.08); border-top: 1px solid rgba(255,255,255,0.08);
+  transform: rotate(45deg);
+}
+.share-popover.open { opacity: 1; transform: scale(1) translateY(0); }
+.share-popover.closing { opacity: 0; transform: scale(0.9) translateY(-6px); }
+
+.share-item {
+  display: flex; align-items: center; gap: 10px; background: none; border: none;
+  color: var(--ink); font-weight: 600; font-size: 13.5px; padding: 9px 8px; border-radius: var(--radius-sm);
+  text-align: left; width: 100%;
+}
+.share-item:hover { background: rgba(255,255,255,0.06); }
+.share-item.copied { color: var(--green); }
+
+.share-icon-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; color: #fff;
+}
+.share-icon-badge.whatsapp { background: #1fae56; }
+.share-icon-badge.instagram { background: linear-gradient(135deg, #f58529, #dd2a7b, #8134af, #515bd4); }
+.share-icon-badge.messenger { background: #006AFF; }
+.share-icon-badge.copy { background: rgba(255,255,255,0.1); color: var(--ink); }
