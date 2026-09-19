@@ -519,15 +519,13 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .share-icon-badge.messenger { background: #006AFF; }
 .share-icon-badge.copy { background: rgba(255,255,255,0.1); color: var(--ink); }
 
-/* Insignia de crédito "GADR Net" — colores fijos de marca, iguales en todas las webs. */
+
+/* Insignia de crédito "GADR Net" — colores fijos de marca, sin fondo ni recuadro. */
 .gadr-credit { display: flex; flex-direction: column; align-items: center; gap: 10px; text-decoration: none; opacity: .85; transition: opacity .25s ease; }
 .gadr-credit:hover { opacity: 1; }
 .gadr-credit-text { font-size: 11px; color: var(--ink-faint); text-align: center; }
-.gadr-mark {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1;
-  width: 64px; height: 64px; border-radius: 50%; background: #F2EDDC; flex-shrink: 0; padding: 6px;
-}
-.gadr-mark-icon { position: relative; font: 700 17px/1 'Segoe UI', monospace; letter-spacing: -1px; color: #3D4632; }
-.gadr-mark-icon i { position: absolute; top: -5px; right: -8px; width: 5px; height: 5px; border-radius: 50%; background: #B2603C; }
-.gadr-mark-word { display: block; font-weight: 900; font-size: 13px; letter-spacing: 0.02em; color: #16150F; text-align: center; margin-top: 3px; }
-.gadr-mark-word small { display: block; font-weight: 700; font-size: 7px; letter-spacing: 0.22em; color: #7E8A70; margin-top: 1px; }
+.gadr-mark { display: flex; flex-direction: column; align-items: center; line-height: 1; flex-shrink: 0; }
+.gadr-mark-icon { position: relative; font: 700 16px/1 'Segoe UI', monospace; letter-spacing: -1px; color: #D8CDB0; }
+.gadr-mark-icon i { position: absolute; top: -4px; right: -7px; width: 4px; height: 4px; border-radius: 50%; background: #B2603C; }
+.gadr-mark-word { display: block; font-weight: 900; font-size: 13px; letter-spacing: 0.04em; color: var(--ink); text-align: center; margin-top: 3px; }
+.gadr-mark-word small { display: block; font-weight: 700; font-size: 7px; letter-spacing: 0.22em; color: #9FAD90; margin-top: 1px; }
