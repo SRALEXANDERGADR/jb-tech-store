@@ -1,0 +1,21 @@
+# Copia este archivo a .dev.vars (sin .example) para desarrollo local con `npm run dev`.
+# .dev.vars NUNCA se sube a git (está en .gitignore). En producción, estos mismos
+# valores se configuran como secretos de Cloudflare con `wrangler secret put NOMBRE`.
+
+# Cadena de conexión de Neon Postgres (https://neon.tech — plan gratis es suficiente).
+DATABASE_URL=postgresql://usuario:password@ep-xxxxx.neon.tech/neondb?sslmode=require
+
+# Contraseña única para entrar al panel admin en /admin
+ADMIN_PASSWORD=cambia-esta-clave
+
+# Cualquier cadena aleatoria larga, solo se usa para firmar la cookie de sesión.
+SESSION_SECRET=cambia-esto-por-una-cadena-aleatoria-larga
+
+# Token de acceso personal de GitHub (permiso "repo") y repo donde se guardan
+# las imágenes subidas desde el panel admin, formato "usuario/repositorio".
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+GITHUB_REPO=SRALEXANDERGADR/jb-tech-store
+
+# Opcional: aviso por correo de cada pedido nuevo (https://resend.com)
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=JB Tech Store <onboarding@resend.dev>
