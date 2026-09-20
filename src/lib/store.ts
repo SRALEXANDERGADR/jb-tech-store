@@ -333,6 +333,19 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
     return true
   })
 
+export const updateOrder = createServerFn({ method: 'POST' })
+  .inputValidator((data: { id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: { id: number; name: string; price: number; quantity: number; cost: number }[] }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    const customerName = data.customerName.trim()
+    if (!customerName) throw new Error('El nombre del cliente es obligatorio.')
+    if (!data.items.length) throw new Error('El pedido debe tener al menos un producto.')
+    const items = data.items.map((item) => ({ ...item, price: Math.max(0, Math.round(item.price)), quantity: Math.max(1, Math.round(item.quantity)) }))
+    const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    await db.update(orders).set({ customerName, email: data.email.trim(), phone: data.phone.trim(), address: data.address.trim(), notes: data.notes.trim(), items, total }).where(eq(orders.id, data.id))
+    return true
+  })
+
 export const deleteOrder = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
   await db.update(orders).set({ deletedAt: new Date() }).where(eq(orders.id, data))
@@ -425,6 +438,27 @@ export const recordPurchase = createServerFn({ method: 'POST' })
     await db.insert(purchases).values({ productId: product.id, productName: product.name, quantity, unitCost, totalCost: quantity * unitCost, remainingQuantity: quantity, notes: data.notes.trim() })
     return true
   })
+
+// Elimina una compra registrada por error (ej. una de prueba). Solo
+// resta del stock la parte de ese lote que TODAVÍA no se ha vendido
+// (remainingQuantity) — lo que ya se vendió de ese lote se queda como
+// está, porque esas ventas ya guardaron su propio costo y no se tocan.
+// Esto es lo que hace bajar "Capital usado" en Finanzas cuando se borra.
+export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
+  await requireAdmin()
+  const [purchase] = await db.select().from(purchases).where(eq(purchases.id, data)).limit(1)
+  if (!purchase) throw new Error('Esa compra ya no existe.')
+  await db.delete(purchases).where(eq(purchases.id, data))
+  const [product] = await db.select().from(products).where(eq(products.id, purchase.productId)).limit(1)
+  if (product) {
+    const newStock = Math.max(0, product.stock - purchase.remainingQuantity)
+    const [nextBatch] = await db.select({ unitCost: purchases.unitCost }).from(purchases)
+      .where(and(eq(purchases.productId, purchase.productId), gt(purchases.remainingQuantity, 0)))
+      .orderBy(purchases.createdAt, purchases.id).limit(1)
+    await db.update(products).set({ stock: newStock, cost: nextBatch ? nextBatch.unitCost : product.cost }).where(eq(products.id, purchase.productId))
+  }
+  return true
+})
 
 // Registra un gasto del negocio o un gasto/retiro personal. `type`
 // 'negocio' se resta de la ganancia antes de calcular la reinversión;

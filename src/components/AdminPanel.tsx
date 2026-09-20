@@ -6,10 +6,10 @@ import {
   Pencil, Plus, RotateCcw, Search, ShoppingBag, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
-  CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deleteProduct,
+  CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deletePurchase, deleteProduct,
   getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
   recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
-  saveProduct, updateOrderStatus,
+  saveProduct, updateOrder, updateOrderStatus,
 } from '@/lib/store'
 
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
@@ -121,6 +121,7 @@ export function AdminPanel() {
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({})
   const [editingPurchase, setEditingPurchase] = useState<PurchaseDraft | null>(null)
   const [editingExpense, setEditingExpense] = useState<ExpenseDraft | null>(null)
+  const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[] } | null>(null)
   const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
 
   async function refresh() {
@@ -237,6 +238,23 @@ export function AdminPanel() {
         notes: editingPurchase.notes,
       } })
       setEditingPurchase(null)
+    })
+  }
+
+  async function handleSaveOrder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!editingOrder) return
+    await withBusy(async () => {
+      await updateOrder({ data: {
+        id: editingOrder.id,
+        customerName: editingOrder.customerName,
+        email: editingOrder.email,
+        phone: editingOrder.phone,
+        address: editingOrder.address,
+        notes: editingOrder.notes,
+        items: editingOrder.items,
+      } })
+      setEditingOrder(null)
     })
   }
 
@@ -403,6 +421,7 @@ export function AdminPanel() {
               {data.purchases.slice(0, 15).map((purchase) => <div className="admin-row" key={purchase.id}>
                 <div><strong>{purchase.productName}</strong><span>{purchase.quantity} × {money(purchase.unitCost)} · {dateFmt(purchase.createdAt)}{purchase.notes ? ` · ${purchase.notes}` : ''}</span></div>
                 <strong>{money(purchase.totalCost)}</strong>
+                <button className="icon-button" title="Eliminar compra (ej. si fue de prueba)" onClick={() => { if (window.confirm('¿Eliminar esta compra? Esto resta del stock lo que quede sin vender de ese lote y baja el Capital usado.')) withBusy(() => deletePurchase({ data: purchase.id })) }}><Trash2 size={15} /></button>
               </div>)}
               {!data.purchases.length && <p className="admin-empty">Todavía no has registrado compras.</p>}
             </div>
@@ -452,7 +471,10 @@ export function AdminPanel() {
               {filteredOrders.map((order) => <div className="admin-order" key={order.id}>
                 <div className="admin-order-head">
                   <div><strong>{order.orderNumber}</strong><span>{dateFmt(order.createdAt)}</span></div>
-                  <button className="icon-button" onClick={() => { if (window.confirm('¿Enviar este pedido a la papelera?')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
+                  <div className="admin-order-actions">
+                    <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })) })}><Pencil size={15} /></button>
+                    <button className="icon-button" onClick={() => { if (window.confirm('¿Enviar este pedido a la papelera?')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
+                  </div>
                 </div>
                 <p className="admin-order-customer">{order.customerName} · {order.phone}{order.address ? ` · ${order.address}` : ''}</p>
                 <ul className="admin-order-items">{order.items.map((item) => <li key={item.id}>{item.quantity}× {item.name} <span>{money(item.price * item.quantity)}</span></li>)}</ul>
@@ -602,6 +624,33 @@ export function AdminPanel() {
           <label>Notas<textarea rows={3} value={editingCustomer.notes} onChange={(event) => setEditingCustomer((current) => current && { ...current, notes: event.target.value })} /></label>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar cliente'}</button>
+        </form>
+      </div></div>}
+
+      {editingOrder && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setEditingOrder(null)}><X /></button>
+        <h2>Editar pedido</h2>
+        <p>Corrige los datos del cliente o los números de este pedido — por ejemplo, si algo se anotó mal.</p>
+        <form className="product-form" onSubmit={handleSaveOrder}>
+          <label>Nombre del cliente<input required value={editingOrder.customerName} onChange={(event) => setEditingOrder((current) => current && { ...current, customerName: event.target.value })} /></label>
+          <div className="form-row">
+            <label>Teléfono<input value={editingOrder.phone} onChange={(event) => setEditingOrder((current) => current && { ...current, phone: event.target.value })} /></label>
+            <label>Correo (opcional)<input value={editingOrder.email} onChange={(event) => setEditingOrder((current) => current && { ...current, email: event.target.value })} /></label>
+          </div>
+          <label>Dirección<input value={editingOrder.address} onChange={(event) => setEditingOrder((current) => current && { ...current, address: event.target.value })} /></label>
+          <label>Notas (opcional)<input value={editingOrder.notes} onChange={(event) => setEditingOrder((current) => current && { ...current, notes: event.target.value })} /></label>
+          <label>Productos del pedido</label>
+          {editingOrder.items.map((item, index) => (
+            <div className="order-edit-item" key={item.id ?? index}>
+              <input value={item.name} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, name: event.target.value } : row) })} />
+              <input type="number" min={1} value={item.quantity} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Number(event.target.value) } : row) })} />
+              <input type="number" min={0} step="0.01" value={item.price / 100} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, price: Math.round(Number(event.target.value) * 100) } : row) })} />
+              <button type="button" className="icon-button" disabled={editingOrder.items.length <= 1} onClick={() => setEditingOrder((current) => current && { ...current, items: current.items.filter((_, rowIndex) => rowIndex !== index) })}><X size={14} /></button>
+            </div>
+          ))}
+          <p className="order-edit-total">Nuevo total: <strong>{money(editingOrder.items.reduce((sum, item) => sum + item.price * item.quantity, 0))}</strong></p>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar cambios'}</button>
         </form>
       </div></div>}
 

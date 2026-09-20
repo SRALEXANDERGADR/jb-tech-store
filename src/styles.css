@@ -375,8 +375,8 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .receipt-head { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
 .receipt-head img { width: 36px; height: 36px; border-radius: 8px; }
 .receipt-head span { color: #fff; font-weight: 900; font-size: 15px; letter-spacing: 0.04em; }
-.receipt-kicker { color: #60a5fa; font-weight: 800; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; }
-.receipt-number { color: #fff; font-size: 24px; font-weight: 900; margin-top: 4px; }
+.receipt-thanks { color: #fff; font-weight: 900; font-size: 19px; margin-top: 4px; }
+.receipt-ref { color: #7c93b8; font-weight: 600; font-size: 12px; margin-top: 4px; }
 .receipt-divider { height: 1px; background: rgba(255,255,255,0.12); margin: 18px 0; }
 .receipt-items { display: flex; flex-direction: column; gap: 10px; }
 .receipt-items > div { display: flex; justify-content: space-between; gap: 12px; color: #cbd5e1; font-size: 13.5px; }
@@ -456,6 +456,11 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 
 .admin-order { background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 14px; }
 .admin-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.admin-order-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.order-edit-item { display: grid; grid-template-columns: 1fr 52px 76px 32px; gap: 6px; align-items: center; }
+.order-edit-item input { background: var(--navy-900); border: 1px solid rgba(255,255,255,0.12); color: var(--ink); border-radius: var(--radius-sm); padding: 8px 9px; font-size: 13px; width: 100%; }
+.order-edit-total { text-align: right; font-size: 14px; color: var(--ink-dim); }
+.order-edit-total strong { color: var(--white); font-size: 16px; }
 .admin-order-head strong { color: var(--ink); font-size: 14.5px; }
 .admin-order-head span { color: var(--ink-faint); font-size: 12px; }
 .admin-order-customer { color: var(--ink-dim); font-size: 13px; margin: 8px 0; }

@@ -154,15 +154,14 @@ function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: st
         <img src="/logo.png" alt="" />
         <span>JB TECH STORE</span>
       </div>
-      <p className="receipt-kicker">PEDIDO CONFIRMADO</p>
-      <h2 className="receipt-number">{orderNumber}</h2>
-      <div className="receipt-divider" />
+      <p className="receipt-thanks">¡Gracias por tu pedido! 🎉</p>
+      <p className="receipt-ref">Ref. {orderNumber} · {today}</p>
       <div className="receipt-items">
         {items.map((item) => <div key={item.productId}><span>{item.quantity}x {item.name}</span><b>{money(item.price * item.quantity)}</b></div>)}
       </div>
       <div className="receipt-divider" />
       <div className="receipt-total"><span>Total</span><b>{money(total)}</b></div>
-      <p className="receipt-footer">Gracias por tu compra · {today}<br />WhatsApp: +{whatsapp}</p>
+      <p className="receipt-footer">Te contactamos enseguida para coordinar el pago y la entrega.<br />WhatsApp: +{whatsapp}</p>
     </div>
   )
 }
