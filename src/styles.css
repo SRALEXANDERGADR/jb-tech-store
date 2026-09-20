@@ -15,9 +15,9 @@
   --navy-700: #16233f;
   --navy-600: #1e2c4d;
   --navy-500: #2c3e63;
-  --blue-400: #60a5fa;
-  --blue-500: #3b82f6;
-  --blue-600: #2563eb;
+  --blue-400: #93c5fd;
+  --blue-500: #60a5fa;
+  --blue-600: #3b82f6;
   --ink: #eaf0fb;
   --ink-dim: #a9b6cc;
   --ink-faint: #77839c;
@@ -153,8 +153,8 @@ input, select, textarea { font-family: inherit; }
 .hero {
   position: relative; padding: 44px 20px 32px; text-align: center; overflow: hidden;
   background:
-    radial-gradient(60% 60% at 15% 0%, rgba(59,130,246,0.28), transparent 60%),
-    radial-gradient(50% 55% at 100% 10%, rgba(96,165,250,0.18), transparent 60%),
+    radial-gradient(75% 70% at 20% -10%, rgba(96,165,250,0.22), rgba(96,165,250,0.08) 45%, transparent 75%),
+    radial-gradient(65% 65% at 100% 0%, rgba(147,197,253,0.16), transparent 70%),
     var(--navy-900);
 }
 .eyebrow {
