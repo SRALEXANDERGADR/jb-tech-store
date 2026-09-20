@@ -14,6 +14,9 @@ export const products = pgTable('products', {
   name: text('name').notNull(),
   category: text('category').notNull().default('Otros'),
   description: text('description').notNull().default(''),
+  // Opciones seleccionables (color/diseño), separadas por coma, ej. "Negro, Azul, Transparente".
+  // Vacío = el producto no muestra selector. No lleva stock ni precio propio por opción.
+  options: text('options').notNull().default(''),
   price: integer('price').notNull().default(0), // centavos
   originalPrice: integer('original_price').notNull().default(0), // centavos, 0 = sin descuento
   stock: integer('stock').notNull().default(0),

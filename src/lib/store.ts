@@ -67,9 +67,9 @@ const seedProducts = [
   { name: 'Power Bank Magnético con Kickstand', category: 'Cargadores y Cables', description: 'Carga inalámbrica magnética 5000mAh, carga rápida y segura, kickstand integrado para mayor comodidad.', price: 135000, originalPrice: 150000, stock: 10, featured: false, isNew: false, bestSeller: true, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Power+Bank' },
   { name: 'Reloj Inteligente Watch 7S', category: 'Relojes Inteligentes', description: 'Monitoreo de frecuencia cardíaca, presión arterial y oxígeno en sangre, contador de pasos, resistente a salpicaduras.', price: 99900, originalPrice: 130000, stock: 8, featured: false, isNew: true, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Reloj+Inteligente' },
   { name: 'Combo AirPods Pro 3 + Cover', category: 'Audífonos y Bocinas', description: 'Sonido premium de alta calidad, protección total con cover resistente incluido.', price: 99000, originalPrice: 110000, stock: 5, featured: true, isNew: false, bestSeller: true, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=AirPods+Pro+3' },
-  { name: 'Cover para AirPods Pro 3', category: 'Covers y Protectores', description: 'Protección contra golpes y rayones, ajuste perfecto, incluye gancho para mayor seguridad. Varios colores disponibles.', price: 20000, originalPrice: 25000, stock: 15, featured: false, isNew: false, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Cover+AirPods' },
+  { name: 'Cover para AirPods Pro 3', category: 'Covers y Protectores', description: 'Protección contra golpes y rayones, ajuste perfecto, incluye gancho para mayor seguridad. Varios colores disponibles.', options: 'Negro, Blanco, Transparente', price: 20000, originalPrice: 25000, stock: 15, featured: false, isNew: false, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Cover+AirPods' },
   { name: 'Protector de Pantalla para iPhone', category: 'Covers y Protectores', description: 'Vidrio templado de alta claridad, resistente a impactos y rayones.', price: 45000, originalPrice: 0, stock: 20, featured: false, isNew: false, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Protector+Pantalla' },
-  { name: 'Cover para iPhone', category: 'Covers y Protectores', description: 'Diseño resistente y elegante, protege tu iPhone con estilo.', price: 65000, originalPrice: 0, stock: 12, featured: false, isNew: true, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Cover+iPhone' },
+  { name: 'Cover para iPhone', category: 'Covers y Protectores', description: 'Diseño resistente y elegante, protege tu iPhone con estilo.', options: 'Negro, Azul, Rojo, Transparente', price: 65000, originalPrice: 0, stock: 12, featured: false, isNew: true, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Cover+iPhone' },
   { name: 'Control Inalámbrico para Gaming', category: 'Gaming', description: 'Compatible con múltiples plataformas, conexión Bluetooth estable, batería de larga duración.', price: 185000, originalPrice: 220000, stock: 7, featured: false, isNew: true, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Control+Gaming' },
   { name: 'Cable Extensor USB-C 240W', category: 'Cargadores y Cables', description: 'Cable trenzado 3.3 pies, soporta carga rápida hasta 240W y transferencia USB 3.2.', price: 99500, originalPrice: 149500, stock: 18, featured: false, isNew: false, bestSeller: false, image: 'https://placehold.co/600x600/0f172a/93c5fd?text=Cable+USB-C' },
 ]
@@ -234,7 +234,7 @@ export const createOrder = createServerFn({ method: 'POST' })
     for (const item of data.items) {
       const product = productRows.find((row) => row.id === item.productId)!
       const batchCost = await consumeFifoCost(product.id, item.quantity)
-      calculated.push({ id: product.id, name: product.name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
+      calculated.push({ id: product.id, name: item.name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -286,12 +286,12 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
 // ADMIN — catálogo
 // ───────────────────────────────────────────────────────────────────────
 export const saveProduct = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id?: number; name: string; category: string; description: string; price: number; originalPrice: number; stock: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
+  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const name = data.name.trim()
     if (!name) throw new Error('El nombre del producto es obligatorio.')
-    const values = { name, category: data.category || 'Otros', description: data.description.trim(), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock: Math.max(0, Math.round(data.stock)), image: data.image, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
+    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: (data.options || '').trim(), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock: Math.max(0, Math.round(data.stock)), image: data.image, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
     if (data.id) {
       const [previous] = await db.select({ image: products.image }).from(products).where(eq(products.id, data.id)).limit(1)
       if (previous && previous.image && previous.image !== data.image) await trashImage(previous.image, 'Imagen reemplazada')

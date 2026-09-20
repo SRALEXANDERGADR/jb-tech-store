@@ -14,6 +14,7 @@ type Product = {
   name: string
   category: string
   description: string
+  options: string
   price: number
   originalPrice: number
   stock: number
@@ -80,8 +81,10 @@ function DiscountBadge({ price, originalPrice }: { price: number; originalPrice:
   return <span className="discount-badge">-{percent}%</span>
 }
 
-function ProductCard({ product, onAdd }: { product: Product; onAdd: (product: Product) => void }) {
+function ProductCard({ product, onAdd }: { product: Product; onAdd: (product: Product, option?: string) => void }) {
   const Icon = categoryIcon(product.category)
+  const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
+  const [selected, setSelected] = useState(options[0] ?? '')
   return (
     <article className="product-card reveal">
       <div className="product-card-media">
@@ -92,11 +95,20 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (product: Pr
       <div className="product-card-body">
         <p className="product-card-category"><Icon size={13} />{product.category}</p>
         <h3>{product.name}</h3>
+        {product.description && <p className="product-card-description">{product.description}</p>}
+        {options.length > 0 && (
+          <div className="product-card-options">
+            <label>Elige una opción</label>
+            <select value={selected} onChange={(event) => setSelected(event.target.value)}>
+              {options.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </div>
+        )}
         <div className="product-card-price">
           {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
           <strong>{money(product.price)}</strong>
         </div>
-        <button className="product-card-add" disabled={product.stock === 0} onClick={() => onAdd(product)}>
+        <button className="product-card-add" disabled={product.stock === 0} onClick={() => onAdd(product, selected || undefined)}>
           {product.stock === 0 ? 'Agotado' : <>Agregar <Plus size={15} /></>}
         </button>
       </div>
@@ -191,11 +203,12 @@ export function Storefront({ data }: Props) {
   const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0)
   const subtotal = cart.reduce((sum, line) => sum + line.price * line.quantity, 0)
 
-  const addToCart = (product: Product) => {
+  const addToCart = (product: Product, option?: string) => {
+    const name = option ? `${product.name} — ${option}` : product.name
     setCart((current) => {
-      const existing = current.find((line) => line.productId === product.id)
-      if (existing) return current.map((line) => line.productId === product.id ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
-      return [...current, { productId: product.id, name: product.name, price: product.price, quantity: 1, image: product.image }]
+      const existing = current.find((line) => line.productId === product.id && line.name === name)
+      if (existing) return current.map((line) => line === existing ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
+      return [...current, { productId: product.id, name, price: product.price, quantity: 1, image: product.image }]
     })
     setCartOpen(true)
   }

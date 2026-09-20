@@ -15,7 +15,7 @@ import {
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
 const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 
-type Product = { id: number; name: string; category: string; description: string; price: number; originalPrice: number; stock: number; cost: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
+type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
 type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
@@ -23,7 +23,7 @@ type ImageTrashRow = { id: number; path: string; url: string; reason: string; de
 type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; notes: string; createdAt: string }
 type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
 type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
-type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
+type ProductDraft = { id?: number; name: string; category: string; description: string; options: string; price: string; originalPrice: string; stock: string; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
 type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
@@ -100,11 +100,11 @@ function daysLeft(deletedAt: string) {
 }
 
 function emptyDraft(): ProductDraft {
-  return { name: '', category: CATEGORIES[0], description: '', price: '', originalPrice: '', stock: '0', image: '', featured: false, isNew: false, bestSeller: false, active: true }
+  return { name: '', category: CATEGORIES[0], description: '', options: '', price: '', originalPrice: '', stock: '0', image: '', featured: false, isNew: false, bestSeller: false, active: true }
 }
 
 function toDraft(product: Product): ProductDraft {
-  return { id: product.id, name: product.name, category: product.category, description: product.description, price: String(product.price / 100), originalPrice: product.originalPrice ? String(product.originalPrice / 100) : '', stock: String(product.stock), image: product.image, featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active }
+  return { id: product.id, name: product.name, category: product.category, description: product.description, options: product.options, price: String(product.price / 100), originalPrice: product.originalPrice ? String(product.originalPrice / 100) : '', stock: String(product.stock), image: product.image, featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active }
 }
 
 export function AdminPanel() {
@@ -183,6 +183,7 @@ export function AdminPanel() {
         name: editing.name,
         category: editing.category,
         description: editing.description,
+        options: editing.options,
         price: Math.round(Number(editing.price || 0) * 100),
         originalPrice: Math.round(Number(editing.originalPrice || 0) * 100),
         stock: Math.round(Number(editing.stock || 0)),
@@ -431,7 +432,7 @@ export function AdminPanel() {
             <div className="admin-table">
               {filteredProducts.map((product) => <div className="admin-row admin-row-product" key={product.id}>
                 <img src={product.image || '/logo.png'} alt="" />
-                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}</span></div>
+                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}</span></div>
                 <div className="admin-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<strong>{money(product.price)}</strong></div>
                 <div className="admin-row-actions">
                   <button onClick={() => setEditing(toDraft(product))}><Pencil size={15} /></button>
@@ -573,6 +574,7 @@ export function AdminPanel() {
             </select>
           </label>
           <label>Descripción<textarea rows={3} value={editing.description} onChange={(event) => setEditing((current) => current && { ...current, description: event.target.value })} /></label>
+          <label>Opciones (colores/diseños, separadas por coma — déjalo vacío si no aplica)<input value={editing.options} onChange={(event) => setEditing((current) => current && { ...current, options: event.target.value })} placeholder="Ej. Negro, Azul, Transparente" /></label>
           <div className="form-row">
             <label>Precio de venta (RD$)<input required type="number" min={0} step="0.01" value={editing.price} onChange={(event) => setEditing((current) => current && { ...current, price: event.target.value })} /></label>
             <label>Precio anterior (RD$, opcional)<input type="number" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} /></label>
