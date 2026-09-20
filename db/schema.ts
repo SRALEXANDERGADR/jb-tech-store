@@ -116,6 +116,10 @@ export const purchases = pgTable('purchases', {
   quantity: integer('quantity').notNull(),
   unitCost: integer('unit_cost').notNull(), // centavos
   totalCost: integer('total_cost').notNull(), // centavos = quantity * unitCost
+  // Cuánto queda de este lote sin vender todavía. Empieza en `quantity` y
+  // baja con cada venta (consumo FIFO: se gasta el lote más viejo
+  // primero). Cuando llega a 0, la próxima venta pasa al siguiente lote.
+  remainingQuantity: integer('remaining_quantity').notNull(),
   notes: text('notes').notNull().default(''),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 })

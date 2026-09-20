@@ -1,6 +1,6 @@
 import { createServerFn } from '@tanstack/react-start'
 import { env } from 'cloudflare:workers'
-import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { content, customers, expenses, imageTrash, orders, products, purchases } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
@@ -92,10 +92,32 @@ function makeFolio(prefix: string) {
  * compradas a `addUnitCost` c/u, a un producto con `prevStock` unidades
  * que ya costaban `prevCost` c/u. Si no había stock previo (producto
  * nuevo o agotado), el promedio es simplemente el costo de esta compra. */
-function weightedAverageCost(prevStock: number, prevCost: number, addQty: number, addUnitCost: number) {
-  const totalQty = prevStock + addQty
-  if (totalQty <= 0) return addUnitCost
-  return Math.round((prevStock * prevCost + addQty * addUnitCost) / totalQty)
+// Consume del lote más viejo primero (FIFO) para vender `quantity`
+// unidades de un producto, y devuelve el costo total (centavos) de esa
+// cantidad. Si no hay suficiente cantidad registrada en `purchases` (ej.
+// stock que ya existía antes de activar Finanzas y nunca se registró como
+// compra), usa el costo actual del producto para lo que falte, para no
+// bloquear la venta.
+async function consumeFifoCost(productId: number, quantity: number): Promise<number> {
+  let remaining = quantity
+  let totalCost = 0
+  const batches = await db.select().from(purchases).where(and(eq(purchases.productId, productId), gt(purchases.remainingQuantity, 0))).orderBy(purchases.createdAt, purchases.id)
+  for (const batch of batches) {
+    if (remaining <= 0) break
+    const take = Math.min(remaining, batch.remainingQuantity)
+    totalCost += take * batch.unitCost
+    remaining -= take
+    await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity - take }).where(eq(purchases.id, batch.id))
+  }
+  if (remaining > 0) {
+    const [product] = await db.select({ cost: products.cost }).from(products).where(eq(products.id, productId)).limit(1)
+    totalCost += remaining * (product?.cost ?? 0)
+  }
+  // El "costo actual" mostrado del producto pasa a ser el del próximo lote
+  // disponible (el siguiente que se va a consumir), no un promedio.
+  const [nextBatch] = await db.select({ unitCost: purchases.unitCost }).from(purchases).where(and(eq(purchases.productId, productId), gt(purchases.remainingQuantity, 0))).orderBy(purchases.createdAt, purchases.id).limit(1)
+  if (nextBatch) await db.update(products).set({ cost: nextBatch.unitCost }).where(eq(products.id, productId))
+  return totalCost
 }
 
 async function ensureSeeded() {
@@ -199,19 +221,26 @@ export const createOrder = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     if (!data.name || !data.phone || !data.items.length) throw new Error('Completa todos los datos del pedido.')
     const productRows = await db.select().from(products).where(and(inArray(products.id, data.items.map((item) => item.productId)), isNull(products.deletedAt)))
-    const calculated = data.items.map((item) => {
+    for (const item of data.items) {
       const product = productRows.find((row) => row.id === item.productId)
       if (!product) throw new Error(`El producto ${item.name} ya no está disponible.`)
       if (product.stock < item.quantity) throw new Error(`Stock insuficiente para ${item.name}.`)
-      return { id: product.id, name: product.name, price: product.price, quantity: item.quantity, cost: product.cost }
-    })
+    }
+
+    // El driver HTTP de Neon no soporta transacciones interactivas, así que
+    // estas operaciones (consumo FIFO + descuento de stock) se hacen en
+    // secuencia en vez de dentro de una tx.
+    const calculated: Array<{ id: number; name: string; price: number; quantity: number; cost: number }> = []
+    for (const item of data.items) {
+      const product = productRows.find((row) => row.id === item.productId)!
+      const batchCost = await consumeFifoCost(product.id, item.quantity)
+      calculated.push({ id: product.id, name: product.name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
+    }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
     const orderNumber = makeFolio('PED')
     const createdAt = new Date()
 
-    // El driver HTTP de Neon no soporta transacciones interactivas, así que
-    // estas operaciones se hacen en secuencia en vez de dentro de una tx.
     const [order] = await db.insert(orders).values({ orderNumber, customerId: customer.id, customerName: data.name, email: data.email, phone: data.phone, address: data.address, items: calculated, total, createdAt }).returning()
     for (const item of calculated) await db.update(products).set({ stock: sql`${products.stock} - ${item.quantity}` }).where(and(eq(products.id, item.id), sql`${products.stock} >= ${item.quantity}`))
 
@@ -386,9 +415,14 @@ export const recordPurchase = createServerFn({ method: 'POST' })
     const [product] = await db.select().from(products).where(eq(products.id, data.productId)).limit(1)
     if (!product) throw new Error('Ese producto ya no existe.')
 
-    const newCost = weightedAverageCost(product.stock, product.cost, quantity, unitCost)
+    // FIFO: este lote nuevo solo se vuelve "el costo actual" si ya no
+    // queda stock de lotes anteriores (o sea, si es el próximo que se va a
+    // consumir). Si todavía hay stock viejo, el costo mostrado no cambia
+    // hasta que ese stock se agote — así se refleja el ahorro de comprar
+    // más barato solo cuando de verdad empiece a venderse ese lote.
+    const newCost = product.stock <= 0 ? unitCost : product.cost
     await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
-    await db.insert(purchases).values({ productId: product.id, productName: product.name, quantity, unitCost, totalCost: quantity * unitCost, notes: data.notes.trim() })
+    await db.insert(purchases).values({ productId: product.id, productName: product.name, quantity, unitCost, totalCost: quantity * unitCost, remainingQuantity: quantity, notes: data.notes.trim() })
     return true
   })
 
