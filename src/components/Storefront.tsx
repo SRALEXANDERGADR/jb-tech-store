@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  ArrowRight, BatteryCharging, Check, ChevronRight, Facebook, Flame, Gamepad2,
+  ArrowRight, BatteryCharging, Check, ChevronDown, ChevronRight, Facebook, Flame, Gamepad2,
   Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, Minus, Package, Plus,
-  Search, Send, ShieldCheck, ShoppingCart, Smartphone, Sparkles, Store, Trash2, Watch, X,
+  Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Watch, X,
 } from 'lucide-react'
 import { createOrder, type CartLine } from '@/lib/store'
 import { ShareButton } from './ShareButton'
@@ -109,6 +109,52 @@ function buildWhatsAppText(orderNumber: string, items: CartLine[], total: number
   return `Hola JB Tech Store! Acabo de hacer el pedido ${orderNumber}:\n\n${lines}\n\nTotal: ${money(total)}`
 }
 
+/** Carga html2canvas desde CDN la primera vez que hace falta (al
+ * compartir un pedido), en vez de instalarlo como dependencia local —
+ * así se evita el problema ya conocido de `pnpm add` con workerd en
+ * Termux. Si ya está cargado (segunda vez que se comparte), no vuelve
+ * a pedirlo. */
+let html2canvasPromise: Promise<any> | null = null
+function loadHtml2Canvas(): Promise<any> {
+  const existing = (window as any).html2canvas
+  if (existing) return Promise.resolve(existing)
+  if (!html2canvasPromise) {
+    html2canvasPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js'
+      script.onload = () => resolve((window as any).html2canvas)
+      script.onerror = () => reject(new Error('No se pudo cargar el generador de imagen.'))
+      document.head.appendChild(script)
+    })
+  }
+  return html2canvasPromise
+}
+
+/** Recibo visual del pedido, pensado solo para capturarse como imagen
+ * (por eso vive fuera de pantalla, no para verse en la página). Estilos
+ * en colores fijos, no en variables CSS, para que la captura salga
+ * igual sin depender de que html2canvas resuelva custom properties. */
+function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: string; items: CartLine[]; total: number; whatsapp: string }) {
+  const today = new Date().toLocaleDateString('es-DO', { day: 'numeric', month: 'long', year: 'numeric' })
+  return (
+    <div className="receipt">
+      <div className="receipt-head">
+        <img src="/logo.png" alt="" />
+        <span>JB TECH STORE</span>
+      </div>
+      <p className="receipt-kicker">PEDIDO CONFIRMADO</p>
+      <h2 className="receipt-number">{orderNumber}</h2>
+      <div className="receipt-divider" />
+      <div className="receipt-items">
+        {items.map((item) => <div key={item.productId}><span>{item.quantity}x {item.name}</span><b>{money(item.price * item.quantity)}</b></div>)}
+      </div>
+      <div className="receipt-divider" />
+      <div className="receipt-total"><span>Total</span><b>{money(total)}</b></div>
+      <p className="receipt-footer">Gracias por tu compra · {today}<br />WhatsApp: +{whatsapp}</p>
+    </div>
+  )
+}
+
 export function Storefront({ data }: Props) {
   const { products, content: copy } = data
 
@@ -119,14 +165,17 @@ export function Storefront({ data }: Props) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('Todos')
   const [maxPrice, setMaxPrice] = useState<number | null>(null)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [offersTab, setOffersTab] = useState<'featured' | 'new' | 'bestSeller'>('featured')
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: number; items: CartLine[] } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [sharingImage, setSharingImage] = useState(false)
   const [error, setError] = useState('')
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
   const maxPossiblePrice = useMemo(() => products.reduce((max, product) => Math.max(max, product.price), 0) || 1000000, [products])
+  const activeFilterCount = (category !== 'Todos' ? 1 : 0) + (maxPrice !== null ? 1 : 0)
 
   const visibleProducts = useMemo(() => products.filter((product) =>
     (category === 'Todos' || product.category === category) &&
@@ -171,6 +220,45 @@ export function Storefront({ data }: Props) {
       setError(caught instanceof Error ? caught.message : 'No pudimos enviar el pedido.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const receiptRef = useRef<HTMLDivElement>(null)
+
+  async function shareOrderImage() {
+    if (!confirmation || sharingImage) return
+    setSharingImage(true)
+    try {
+      const html2canvas = await loadHtml2Canvas()
+      const node = receiptRef.current
+      if (!node) throw new Error('no-node')
+      const canvas = await html2canvas(node, { backgroundColor: '#0b1220', scale: 2, useCORS: true })
+      const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('no-blob')
+      const file = new File([blob], `pedido-${confirmation.orderNumber}.png`, { type: 'image/png' })
+      const caption = `Pedido ${confirmation.orderNumber} — JB Tech Store`
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text: caption })
+        return
+      }
+      // Respaldo (navegador de escritorio u otro sin share de archivos):
+      // descarga la imagen y abre WhatsApp con el texto de siempre, para
+      // que quien no tenga el share nativo igual pueda adjuntarla a mano.
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `pedido-${confirmation.orderNumber}.png`
+      link.click()
+      URL.revokeObjectURL(url)
+      window.open(`https://wa.me/${copy.whatsapp}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
+    } catch (caught) {
+      if (caught instanceof Error && caught.name === 'AbortError') return // el usuario cerró el menú de compartir
+      // Si algo falla generando la imagen, no lo dejamos sin poder
+      // avisar: cae al texto de siempre.
+      window.open(`https://wa.me/${copy.whatsapp}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
+    } finally {
+      setSharingImage(false)
     }
   }
 
@@ -256,16 +344,22 @@ export function Storefront({ data }: Props) {
         <div className="catalog-layout">
           <aside className="filters reveal">
             <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar producto..." /></label>
-            <div className="filter-block">
-              <p className="filter-label">Categoría</p>
-              <div className="category-list">
-                {categories.map((item) => <button className={category === item ? 'active' : ''} onClick={() => setCategory(item)} key={item}>{item}<span>{item === 'Todos' ? products.length : products.filter((product) => product.category === item).length}</span></button>)}
+            <button type="button" className="filters-toggle" onClick={() => setFiltersOpen((current) => !current)} aria-expanded={filtersOpen}>
+              <SlidersHorizontal size={15} />Filtros{activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+              <ChevronDown size={16} className={filtersOpen ? 'flip' : ''} />
+            </button>
+            <div className={`filters-body ${filtersOpen ? 'open' : ''}`}>
+              <div className="filter-block">
+                <p className="filter-label">Categoría</p>
+                <div className="category-list">
+                  {categories.map((item) => <button className={category === item ? 'active' : ''} onClick={() => setCategory(item)} key={item}>{item}<span>{item === 'Todos' ? products.length : products.filter((product) => product.category === item).length}</span></button>)}
+                </div>
               </div>
-            </div>
-            <div className="filter-block">
-              <p className="filter-label">Precio máximo: {money(maxPrice ?? maxPossiblePrice)}</p>
-              <input type="range" min={0} max={maxPossiblePrice} step={5000} value={maxPrice ?? maxPossiblePrice} onChange={(event) => setMaxPrice(Number(event.target.value))} />
-              {maxPrice !== null && <button className="filter-reset" onClick={() => setMaxPrice(null)}>Quitar filtro de precio</button>}
+              <div className="filter-block">
+                <p className="filter-label">Precio máximo: {money(maxPrice ?? maxPossiblePrice)}</p>
+                <input type="range" min={0} max={maxPossiblePrice} step={5000} value={maxPrice ?? maxPossiblePrice} onChange={(event) => setMaxPrice(Number(event.target.value))} />
+                {maxPrice !== null && <button className="filter-reset" onClick={() => setMaxPrice(null)}>Quitar filtro de precio</button>}
+              </div>
             </div>
           </aside>
           <div className="product-grid">
@@ -350,7 +444,7 @@ export function Storefront({ data }: Props) {
         <p>Tu número de pedido es</p>
         <strong>{confirmation.orderNumber}</strong>
         <p>Total: {money(confirmation.total)}. Te contactaremos para coordinar pago y entrega, o envíanos tu pedido ahora mismo por WhatsApp:</p>
-        <a className="primary-button" href={`https://wa.me/${copy.whatsapp}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={16} />Enviar pedido por WhatsApp</a>
+        <button className="primary-button" disabled={sharingImage} onClick={shareOrderImage}><WhatsAppIcon size={16} />{sharingImage ? 'Generando imagen…' : 'Enviar pedido por WhatsApp'}</button>
         <button className="ghost-button" onClick={() => { setCheckoutOpen(false); setConfirmation(null) }}>Volver a la tienda</button>
       </div> : <div className="checkout-grid">
         <div>
@@ -373,5 +467,9 @@ export function Storefront({ data }: Props) {
         </div>
       </div>}
     </div></div>}
+
+    <div className="receipt-capture" ref={receiptRef}>
+      {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={copy.whatsapp} />}
+    </div>
   </div>
 }
