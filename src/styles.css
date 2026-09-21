@@ -436,6 +436,7 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 
 .admin-table { display: flex; flex-direction: column; gap: 8px; }
 .admin-row {
+  content-visibility: auto; contain-intrinsic-size: 0 90px;
   display: flex; align-items: center; gap: 12px; background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06);
   border-radius: var(--radius-md); padding: 12px;
 }
