@@ -152,6 +152,7 @@ input, select, textarea { font-family: inherit; }
 /* ─── Hero ─── */
 .hero {
   position: relative; padding: 44px 20px 32px; text-align: center; overflow: hidden;
+  width: 100vw; margin-left: calc(-50vw + 50%); margin-right: calc(-50vw + 50%);
   background:
     radial-gradient(circle 300px at 15% -10%, rgba(96,165,250,0.24), rgba(96,165,250,0.06) 55%, transparent 100%),
     radial-gradient(circle 260px at 110% 0%, rgba(147,197,253,0.16), transparent 100%),
@@ -455,7 +456,7 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .status-personal { background: rgba(168,85,247,0.16); color: #c084fc; }
 
 .admin-order { background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 14px; }
-.admin-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.admin-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .admin-order-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .order-edit-item { display: grid; grid-template-columns: 1fr 52px 76px 32px; gap: 6px; align-items: center; }
 .order-edit-item input { background: var(--navy-900); border: 1px solid rgba(255,255,255,0.12); color: var(--ink); border-radius: var(--radius-sm); padding: 8px 9px; font-size: 13px; width: 100%; }

@@ -168,6 +168,7 @@ function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: st
 
 export function Storefront({ data }: Props) {
   const { products, content: copy } = data
+  const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
@@ -263,12 +264,12 @@ export function Storefront({ data }: Props) {
       link.download = `pedido-${confirmation.orderNumber}.png`
       link.click()
       URL.revokeObjectURL(url)
-      window.open(`https://wa.me/${copy.whatsapp}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
+      window.open(`https://wa.me/${whatsappDigits}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
     } catch (caught) {
       if (caught instanceof Error && caught.name === 'AbortError') return // el usuario cerró el menú de compartir
       // Si algo falla generando la imagen, no lo dejamos sin poder
       // avisar: cae al texto de siempre.
-      window.open(`https://wa.me/${copy.whatsapp}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
+      window.open(`https://wa.me/${whatsappDigits}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
     } finally {
       setSharingImage(false)
     }
@@ -319,7 +320,7 @@ export function Storefront({ data }: Props) {
         <p className="hero-lede reveal delay-1">{copy.heroDescription}</p>
         <div className="hero-actions reveal delay-1">
           <a className="primary-button" href="#tienda">{copy.heroCta}<ArrowRight size={16} /></a>
-          <a className="whatsapp-button" href={`https://wa.me/${copy.whatsapp}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={17} />WhatsApp</a>
+          <a className="whatsapp-button" href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={17} />WhatsApp</a>
         </div>
         <p className="hero-badge reveal delay-1"><Send size={13} />{copy.heroBadge}</p>
       </section>
@@ -397,12 +398,12 @@ export function Storefront({ data }: Props) {
           <div className="footer-social">
             <a href={`https://instagram.com/${(copy.instagram || '').replace('@', '')}`} target="_blank" rel="noreferrer" aria-label="Instagram"><Instagram size={17} /></a>
             <a href={`https://facebook.com/${copy.facebook || ''}`} target="_blank" rel="noreferrer" aria-label="Facebook"><Facebook size={17} /></a>
-            <a href={`https://wa.me/${copy.whatsapp}`} target="_blank" rel="noreferrer" aria-label="WhatsApp"><WhatsAppIcon size={17} /></a>
+            <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer" aria-label="WhatsApp"><WhatsAppIcon size={17} /></a>
           </div>
         </div>
         <div className="reveal delay-1">
           <span>Contáctanos</span>
-          <a className="footer-whatsapp" href={`https://wa.me/${copy.whatsapp}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={16} />Pedidos por WhatsApp</a>
+          <a className="footer-whatsapp" href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={16} />Pedidos por WhatsApp</a>
           <p className="footer-location">{copy.location}</p>
         </div>
         <div className="reveal delay-2"><span>Horario</span><p>{copy.schedule}</p></div>
@@ -427,7 +428,7 @@ export function Storefront({ data }: Props) {
       <a href="#inicio"><Home size={20} /><span>Inicio</span></a>
       <a href="#tienda"><Store size={20} /><span>Tienda</span></a>
       <button onClick={() => setCartOpen(true)}><ShoppingCart size={20} />{cartCount > 0 && <b>{cartCount}</b>}<span>Carrito</span></button>
-      <a href={`https://wa.me/${copy.whatsapp}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={20} /><span>WhatsApp</span></a>
+      <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={20} /><span>WhatsApp</span></a>
     </nav>
 
     <div className={`overlay ${cartOpen ? 'visible' : ''}`} onClick={() => setCartOpen(false)} />
@@ -481,7 +482,7 @@ export function Storefront({ data }: Props) {
     </div></div>}
 
     <div className="receipt-capture" ref={receiptRef}>
-      {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={copy.whatsapp} />}
+      {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={whatsappDigits} />}
     </div>
   </div>
 }

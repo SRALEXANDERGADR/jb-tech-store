@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import type { ChangeEvent, ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  AlertTriangle, Check, ChevronLeft, LayoutDashboard, ListOrdered, LogOut, Package,
-  Pencil, Plus, RotateCcw, Search, ShoppingBag, Trash2, Upload, Users, Wallet, X,
+  AlertTriangle, Check, ChevronLeft, Download, LayoutDashboard, ListOrdered, LogOut, Package,
+  Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
   CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deletePurchase, deleteProduct,
@@ -20,6 +20,61 @@ type OrderItem = { id: number; name: string; price: number; quantity: number; co
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
+
+/** Carga jsPDF desde CDN la primera vez que hace falta (al ver/descargar
+ * una factura), igual que el recibo del cliente carga html2canvas — así
+ * no toca instalarlo como dependencia local. */
+let jsPdfPromise: Promise<any> | null = null
+function loadJsPdf(): Promise<any> {
+  const existing = (window as any).jspdf
+  if (existing) return Promise.resolve(existing.jsPDF)
+  if (!jsPdfPromise) {
+    jsPdfPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+      script.onload = () => resolve((window as any).jspdf.jsPDF)
+      script.onerror = () => reject(new Error('No se pudo cargar el generador de PDF.'))
+      document.head.appendChild(script)
+    })
+  }
+  return jsPdfPromise
+}
+
+function buildInvoiceDoc(JsPDF: any, order: Order) {
+  const doc = new JsPDF({ unit: 'pt', format: 'a4' })
+  const today = dateFmt(order.createdAt)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(15, 23, 42)
+  doc.text('JB TECH STORE', 40, 50)
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100)
+  doc.text('Factura de pedido', 40, 68)
+  doc.setDrawColor(220); doc.line(40, 82, 555, 82)
+
+  doc.setFontSize(11); doc.setTextColor(30)
+  doc.text(`Pedido: ${order.orderNumber}`, 40, 104)
+  doc.text(`Fecha: ${today}`, 40, 120)
+  doc.text(`Cliente: ${order.customerName}`, 40, 142)
+  doc.text(`Teléfono: ${order.phone || '-'}`, 40, 158)
+  if (order.address) doc.text(`Dirección: ${order.address}`, 40, 174, { maxWidth: 400 })
+
+  let y = 205
+  doc.setFont('helvetica', 'bold')
+  doc.text('Producto', 40, y); doc.text('Cant.', 400, y); doc.text('Precio', 555, y, { align: 'right' })
+  y += 6; doc.setDrawColor(220); doc.line(40, y, 555, y); y += 18
+  doc.setFont('helvetica', 'normal')
+  for (const item of order.items) {
+    doc.text(item.name, 40, y, { maxWidth: 330 })
+    doc.text(String(item.quantity), 400, y)
+    doc.text(money(item.price * item.quantity), 555, y, { align: 'right' })
+    y += 22
+  }
+  y += 8; doc.setDrawColor(220); doc.line(40, y, 555, y); y += 24
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+  doc.text('Total', 40, y); doc.text(money(order.total), 555, y, { align: 'right' })
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(140)
+  doc.text('Gracias por comprar en JB Tech Store.', 40, y + 40)
+  return doc
+}
 type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; notes: string; createdAt: string }
 type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
 type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
@@ -258,6 +313,28 @@ export function AdminPanel() {
     })
   }
 
+  async function handleDownloadInvoice(order: Order) {
+    await withBusy(async () => {
+      const JsPDF = await loadJsPdf()
+      buildInvoiceDoc(JsPDF, order).save(`Factura-${order.orderNumber}.pdf`)
+    })
+  }
+
+  async function handleShareInvoice(order: Order) {
+    await withBusy(async () => {
+      const JsPDF = await loadJsPdf()
+      const doc = buildInvoiceDoc(JsPDF, order)
+      const file = new File([doc.output('blob')], `Factura-${order.orderNumber}.pdf`, { type: 'application/pdf' })
+      const nav = navigator as any
+      if (nav.canShare && nav.canShare({ files: [file] })) {
+        try { await nav.share({ files: [file], title: `Factura ${order.orderNumber}` }) }
+        catch (err) { if ((err as Error)?.name !== 'AbortError') doc.save(file.name) }
+      } else {
+        doc.save(file.name)
+      }
+    })
+  }
+
   async function handleSaveExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editingExpense) return
@@ -473,6 +550,8 @@ export function AdminPanel() {
                   <div><strong>{order.orderNumber}</strong><span>{dateFmt(order.createdAt)}</span></div>
                   <div className="admin-order-actions">
                     <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })) })}><Pencil size={15} /></button>
+                    <button className="icon-button" title="Descargar factura (PDF)" disabled={busy} onClick={() => handleDownloadInvoice(order)}><Download size={15} /></button>
+                    <button className="icon-button" title="Compartir factura" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
                     <button className="icon-button" onClick={() => { if (window.confirm('¿Enviar este pedido a la papelera?')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
                   </div>
                 </div>
