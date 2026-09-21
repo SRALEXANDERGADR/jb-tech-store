@@ -680,7 +680,17 @@ export function AdminPanel() {
             <label>Precio de venta (RD$)<input required type="number" min={0} step="0.01" value={editing.price} onChange={(event) => setEditing((current) => current && { ...current, price: event.target.value })} /></label>
             <label>Precio anterior (RD$, opcional)<input type="number" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} /></label>
           </div>
-          <label>Existencias<input required type="number" min={0} value={editing.stock} onChange={(event) => setEditing((current) => current && { ...current, stock: event.target.value })} /></label>
+          {editing.id ? (
+            <>
+              <label>Existencias<input required type="number" min={0} value={editing.stock} onChange={(event) => setEditing((current) => current && { ...current, stock: event.target.value })} /></label>
+              <p className="admin-hint"><AlertTriangle size={14} />Este número reemplaza la cantidad tal cual (no suma ni resta). Úsalo solo para corregir un conteo — no mueve el capital ni el costo promedio. Para sumar inventario nuevo usa «Registrar compra» en la pestaña Finanzas.</p>
+            </>
+          ) : (
+            <>
+              <label>Existencias<input type="number" value="0" disabled /></label>
+              <p className="admin-hint"><AlertTriangle size={14} />Los productos nuevos siempre inician en 0. Guarda el producto y luego usa «Registrar compra» (pestaña Finanzas) para sumarle las unidades — así el costo también queda registrado y no se duplica el inventario.</p>
+            </>
+          )}
           <div className="form-checks">
             <label><input type="checkbox" checked={editing.featured} onChange={(event) => setEditing((current) => current && { ...current, featured: event.target.checked })} />Destacado</label>
             <label><input type="checkbox" checked={editing.isNew} onChange={(event) => setEditing((current) => current && { ...current, isNew: event.target.checked })} />Nuevo</label>

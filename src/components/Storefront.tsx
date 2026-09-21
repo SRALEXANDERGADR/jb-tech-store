@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  ArrowRight, BatteryCharging, Check, ChevronDown, ChevronRight, Facebook, Flame, Gamepad2,
+  ArrowRight, BatteryCharging, Check, ChevronDown, ChevronRight, Eye, Facebook, Flame, Gamepad2,
   Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, Minus, Package, Phone, Plus,
   Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Watch, X,
 } from 'lucide-react'
@@ -81,16 +81,17 @@ function DiscountBadge({ price, originalPrice }: { price: number; originalPrice:
   return <span className="discount-badge">-{percent}%</span>
 }
 
-function ProductCard({ product, onAdd }: { product: Product; onAdd: (product: Product, option?: string) => void }) {
+function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (product: Product, option?: string) => void; onView: (product: Product) => void }) {
   const Icon = categoryIcon(product.category)
   const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
   const [selected, setSelected] = useState(options[0] ?? '')
   return (
     <article className="product-card reveal">
-      <div className="product-card-media">
+      <div className="product-card-media" onClick={() => onView(product)}>
         <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
         {product.stock === 0 && <span className="stock-badge">Agotado</span>}
         <img src={product.image} alt={product.name} loading="lazy" />
+        <button type="button" className="product-card-view-button" onClick={(event) => { event.stopPropagation(); onView(product) }} aria-label={`Ver detalles de ${product.name}`}><Eye size={15} /></button>
       </div>
       <div className="product-card-body">
         <p className="product-card-category"><Icon size={13} />{product.category}</p>
@@ -113,6 +114,48 @@ function ProductCard({ product, onAdd }: { product: Product; onAdd: (product: Pr
         </button>
       </div>
     </article>
+  )
+}
+
+/** Vista ampliada de un producto (se abre al tocar la foto o el ícono de
+ * ojo en la tarjeta): foto grande, categoría, nombre completo, la
+ * descripción SIN recortar (en la tarjeta se corta a 2 líneas) y el
+ * mismo selector de opciones + botón de agregar. */
+function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd: (product: Product, option?: string) => void; onClose: () => void }) {
+  const Icon = categoryIcon(product.category)
+  const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
+  const [selected, setSelected] = useState(options[0] ?? '')
+  return (
+    <div className="modal-wrap" onClick={onClose}>
+      <div className="modal-card product-quickview" onClick={(event) => event.stopPropagation()}>
+        <button className="modal-close icon-button" onClick={onClose}><X /></button>
+        <div className="product-quickview-media">
+          <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
+          {product.stock === 0 && <span className="stock-badge">Agotado</span>}
+          <img src={product.image} alt={product.name} />
+        </div>
+        <div className="product-quickview-body">
+          <p className="product-card-category"><Icon size={13} />{product.category}</p>
+          <h2>{product.name}</h2>
+          {product.description && <p className="product-quickview-description">{product.description}</p>}
+          {options.length > 0 && (
+            <div className="product-card-options">
+              <label>Elige una opción</label>
+              <select value={selected} onChange={(event) => setSelected(event.target.value)}>
+                {options.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="product-card-price">
+            {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
+            <strong>{money(product.price)}</strong>
+          </div>
+          <button className="primary-button full" disabled={product.stock === 0} onClick={() => { onAdd(product, selected || undefined); onClose() }}>
+            {product.stock === 0 ? 'Agotado' : <>Agregar al carrito <Plus size={15} /></>}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -183,6 +226,7 @@ export function Storefront({ data }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [sharingImage, setSharingImage] = useState(false)
   const [error, setError] = useState('')
+  const [quickView, setQuickView] = useState<Product | null>(null)
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
@@ -356,7 +400,7 @@ export function Storefront({ data }: Props) {
           <button className={offersTab === 'bestSeller' ? 'active' : ''} onClick={() => setOffersTab('bestSeller')}>Más vendidos</button>
         </div>
         <div className="product-grid">
-          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} />)}
+          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onView={setQuickView} />)}
         </div>
       </section>
 
@@ -384,7 +428,7 @@ export function Storefront({ data }: Props) {
             </div>
           </aside>
           <div className="product-grid">
-            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} />)}
+            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onView={setQuickView} />)}
             {visibleProducts.length === 0 && <div className="empty-state"><Search /><h3>No encontramos ese producto</h3><p>Prueba otra palabra o categoría.</p></div>}
           </div>
         </div>
@@ -489,6 +533,8 @@ export function Storefront({ data }: Props) {
         </div>
       </div>}
     </div></div>}
+
+    {quickView && <ProductQuickView product={quickView} onAdd={addToCart} onClose={() => setQuickView(null)} />}
 
     <div className="receipt-capture" ref={receiptRef}>
       {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={whatsappDigits} />}
