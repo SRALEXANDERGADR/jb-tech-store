@@ -3,7 +3,7 @@ import type { ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowRight, BatteryCharging, Check, ChevronDown, ChevronRight, Facebook, Flame, Gamepad2,
-  Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, Minus, Package, Plus,
+  Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, Minus, Package, Phone, Plus,
   Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Watch, X,
 } from 'lucide-react'
 import { createOrder, type CartLine } from '@/lib/store'
@@ -238,6 +238,19 @@ export function Storefront({ data }: Props) {
 
   const receiptRef = useRef<HTMLDivElement>(null)
 
+  // Esta es la acción principal: abre WhatsApp directo en el chat de la
+  // tienda (tu número), con el pedido ya escrito. No depende de que el
+  // cliente tenga tu número guardado ni de que sepa a quién compartirle
+  // algo — el link wa.me ya lleva el número adentro.
+  function sendOrderText() {
+    if (!confirmation) return
+    window.open(`https://wa.me/${whatsappDigits}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
+  }
+
+  // Esta es la opción secundaria (opcional): comparte la imagen bonita
+  // del recibo por el selector nativo del teléfono. A diferencia del
+  // botón principal, aquí SÍ depende de que la persona escoja a quién
+  // mandársela — por eso ya no es la acción por defecto.
   async function shareOrderImage() {
     if (!confirmation || sharingImage) return
     setSharingImage(true)
@@ -256,20 +269,15 @@ export function Storefront({ data }: Props) {
         return
       }
       // Respaldo (navegador de escritorio u otro sin share de archivos):
-      // descarga la imagen y abre WhatsApp con el texto de siempre, para
-      // que quien no tenga el share nativo igual pueda adjuntarla a mano.
+      // simplemente descarga la imagen para que la persona la adjunte a mano.
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       link.download = `pedido-${confirmation.orderNumber}.png`
       link.click()
       URL.revokeObjectURL(url)
-      window.open(`https://wa.me/${whatsappDigits}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
     } catch (caught) {
       if (caught instanceof Error && caught.name === 'AbortError') return // el usuario cerró el menú de compartir
-      // Si algo falla generando la imagen, no lo dejamos sin poder
-      // avisar: cae al texto de siempre.
-      window.open(`https://wa.me/${whatsappDigits}?text=${encodeURIComponent(buildWhatsAppText(confirmation.orderNumber, confirmation.items, confirmation.total))}`, '_blank', 'noreferrer')
     } finally {
       setSharingImage(false)
     }
@@ -284,9 +292,9 @@ export function Storefront({ data }: Props) {
       </div>
       <a className="wordmark" href="#inicio"><BrandMark /></a>
       <nav className="desktop-nav">
-        <a href="#tienda">{copy.navShop}</a>
-        <a href="#ofertas">{copy.navOffers}</a>
-        <a href="#contacto">{copy.navContact}</a>
+        <a href="#tienda"><Store size={16} />{copy.navShop}</a>
+        <a href="#ofertas"><Flame size={16} />{copy.navOffers}</a>
+        <a href="#contacto"><Phone size={16} />{copy.navContact}</a>
       </nav>
       <div className="topbar-actions">
         <ShareButton title={copy.brandName} />
@@ -457,7 +465,8 @@ export function Storefront({ data }: Props) {
         <p>Tu número de pedido es</p>
         <strong>{confirmation.orderNumber}</strong>
         <p>Total: {money(confirmation.total)}. Te contactaremos para coordinar pago y entrega, o envíanos tu pedido ahora mismo por WhatsApp:</p>
-        <button className="primary-button" disabled={sharingImage} onClick={shareOrderImage}><WhatsAppIcon size={16} />{sharingImage ? 'Generando imagen…' : 'Enviar pedido por WhatsApp'}</button>
+        <button className="primary-button" onClick={sendOrderText}><WhatsAppIcon size={16} />Enviar pedido por WhatsApp</button>
+        <button className="ghost-button" disabled={sharingImage} onClick={shareOrderImage}>{sharingImage ? 'Generando imagen…' : 'O comparte la imagen del pedido'}</button>
         <button className="ghost-button" onClick={() => { setCheckoutOpen(false); setConfirmation(null) }}>Volver a la tienda</button>
       </div> : <div className="checkout-grid">
         <div>

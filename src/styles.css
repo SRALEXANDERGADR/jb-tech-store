@@ -107,8 +107,8 @@ input, select, textarea { font-family: inherit; }
 .mini-mark .brand-mark-text { font-size: 13px; }
 
 .desktop-nav { display: none; }
-.desktop-nav a { font-weight: 600; font-size: 14px; color: var(--ink-dim); }
-.desktop-nav a:hover { color: var(--ink); }
+.desktop-nav a { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 14px; color: var(--ink-dim); padding: 8px 4px; }
+.desktop-nav a:hover { color: var(--blue-400); }
 
 .cart-button {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
@@ -407,7 +407,11 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .admin-shell { min-height: 100vh; display: flex; flex-direction: column; background: var(--navy-900); }
 .admin-sidebar { background: var(--navy-950); padding: 18px 14px; display: flex; flex-direction: column; gap: 4px; }
 .admin-sidebar h1 { color: var(--white); font-size: 18px; margin: 2px 0 16px; }
-.admin-sidebar nav { display: flex; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; }
+.admin-sidebar nav {
+  display: flex; flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
 .admin-sidebar nav button {
   display: flex; align-items: center; gap: 8px; white-space: nowrap; background: none; border: none;
   color: var(--ink-dim); font-weight: 700; font-size: 13px; padding: 9px 13px; border-radius: 999px;
