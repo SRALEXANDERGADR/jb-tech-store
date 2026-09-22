@@ -22,7 +22,11 @@ const defaultContent: Record<string, string> = {
   // Mensaje que se dice en voz alta (con la voz del propio navegador del
   // visitante) apenas entra a la tienda. Vacío = no se dice nada.
   welcomeVoiceText: 'Hola... te damos la bienvenida a... JB Tech Store... Esperamos que te guste nuestra variedad de productos.',
-  welcomeVoiceGender: 'hombre',
+  // 'audio' = reproduce un archivo de audio real; 'texto' = usa la voz
+  // sintetizada del navegador; 'desactivado' = no dice nada al entrar.
+  // Solo uno de los dos (audio o texto) puede estar activo a la vez.
+  welcomeVoiceMode: 'audio',
+  welcomeAudioUrl: '/audio/bienvenida.mp3',
   navHome: 'Inicio',
   navShop: 'Tienda',
   navOffers: 'Ofertas',

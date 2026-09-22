@@ -242,20 +242,17 @@ function splitIntoVoiceSegments(text: string): VoiceSegment[] {
   return segments
 }
 
-const FEMALE_VOICE_HINTS = ['female', 'mujer', 'maria', 'lucía', 'lucia', 'sofía', 'sofia', 'valentina', 'camila', 'mónica', 'monica', 'elena', 'laura', 'inés', 'ines', 'isabela', 'paulina']
 const MALE_VOICE_HINTS = ['male', 'hombre', 'jorge', 'diego', 'carlos', 'pablo', 'miguel', 'enrique', 'juan', 'fernando', 'andrés', 'andres', 'raúl', 'raul', 'alonso', 'antonio']
 
 /** Dice en voz alta un mensaje de bienvenida apenas se carga la tienda,
  * usando la voz nativa del navegador del visitante (no requiere subir
- * ningún archivo de audio). Busca una voz del género elegido en el panel
- * admin (si el dispositivo tiene alguna con ese nombre); si no encuentra
- * ninguna, usa la voz en español que haya disponible y ajusta el tono
- * para acercarse al género pedido. Habla más despacio y respeta las
- * pausas marcadas con "..." en el texto para sonar más natural. Los
- * navegadores bloquean a veces el audio automático sin interacción
- * previa del usuario: si eso pasa, el mensaje queda "armado" y se
- * dispara con el primer toque/clic/tecla en la página. */
-function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
+ * ningún archivo de audio). Prefiere una voz de hombre si el dispositivo
+ * tiene alguna disponible, habla más despacio, y respeta las pausas
+ * marcadas con "..." en el texto para sonar más natural. Los navegadores
+ * bloquean a veces el audio automático sin interacción previa del
+ * usuario: si eso pasa, el mensaje queda "armado" y se dispara con el
+ * primer toque/clic/tecla en la página. */
+function useWelcomeVoice(text: string) {
   useEffect(() => {
     if (!text.trim()) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
@@ -263,16 +260,15 @@ function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
     let started = false
     let cancelled = false
 
-    const pickVoice = () => {
+    const pickMaleSpanishVoice = () => {
       const voices = window.speechSynthesis.getVoices()
       const spanish = voices.filter((voice) => voice.lang.toLowerCase().startsWith('es'))
-      const hints = gender === 'mujer' ? FEMALE_VOICE_HINTS : MALE_VOICE_HINTS
-      const matched = spanish.find((voice) => hints.some((hint) => voice.name.toLowerCase().includes(hint)))
-      return matched || spanish[0] || voices[0]
+      const male = spanish.find((voice) => MALE_VOICE_HINTS.some((hint) => voice.name.toLowerCase().includes(hint)))
+      return male || spanish[0] || voices[0]
     }
 
     const speakSegments = (segments: VoiceSegment[]) => {
-      const voice = pickVoice()
+      const voice = pickMaleSpanishVoice()
       let i = 0
       const speakNext = () => {
         if (cancelled || i >= segments.length) return
@@ -281,7 +277,7 @@ function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
         utterance.lang = 'es-DO'
         if (voice) utterance.voice = voice
         utterance.rate = 0.85 // un poco más lento, ritmo más natural
-        utterance.pitch = gender === 'mujer' ? 1.08 : 0.8 // acerca el tono al género elegido
+        utterance.pitch = 0.85 // un poco más grave
         utterance.onend = () => {
           i++
           if (segment.pauseAfter > 0) setTimeout(speakNext, segment.pauseAfter)
@@ -314,14 +310,50 @@ function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
       window.removeEventListener('pointerdown', start)
       window.removeEventListener('keydown', start)
     }
-  }, [text, gender])
+  }, [text])
+}
+
+/** Reproduce un archivo de audio de bienvenida real apenas se carga la
+ * tienda (alternativa a la voz sintetizada de arriba — solo una de las
+ * dos está activa a la vez, según lo que se elija en el panel admin).
+ * Si el navegador bloquea el autoplay por no haber interacción previa,
+ * el audio se dispara con el primer toque/clic/tecla en la página. */
+function useWelcomeAudio(url: string) {
+  useEffect(() => {
+    if (!url) return
+    if (typeof window === 'undefined') return
+
+    const audio = new Audio(url)
+    audio.preload = 'auto'
+    let started = false
+
+    const start = () => {
+      if (started) return
+      started = true
+      audio.play().catch(() => {
+        started = false // el navegador lo bloqueó; se reintenta con la próxima interacción
+      })
+    }
+    start()
+
+    window.addEventListener('pointerdown', start, { once: true })
+    window.addEventListener('keydown', start, { once: true })
+
+    return () => {
+      window.removeEventListener('pointerdown', start)
+      window.removeEventListener('keydown', start)
+      audio.pause()
+    }
+  }, [url])
 }
 
 export function Storefront({ data }: Props) {
   const { products, content: copy } = data
   const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
 
-  useWelcomeVoice(copy.welcomeVoiceText || '', copy.welcomeVoiceGender === 'mujer' ? 'mujer' : 'hombre')
+  const welcomeMode = copy.welcomeVoiceMode || 'desactivado'
+  useWelcomeVoice(welcomeMode === 'texto' ? (copy.welcomeVoiceText || '') : '')
+  useWelcomeAudio(welcomeMode === 'audio' ? (copy.welcomeAudioUrl || '') : '')
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
