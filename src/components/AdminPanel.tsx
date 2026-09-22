@@ -101,15 +101,18 @@ function emptyExpenseDraft(): ExpenseDraft {
 const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
 const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
 
-const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' | 'select'; options?: Array<{ value: string; label: string }> }> }> = [
+const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' | 'select'; options?: Array<{ value: string; label: string }>; showIf?: (draft: Record<string, string>) => boolean }> }> = [
   { title: 'Marca', fields: [
     { key: 'brandName', label: 'Nombre de la marca' },
     { key: 'brandTagline', label: 'Eslogan' },
-    { key: 'welcomeVoiceMode', label: 'Bienvenida al entrar a la tienda', type: 'select', options: [{ value: 'audio', label: 'Audio grabado' }, { value: 'texto', label: 'Voz por texto (sintetizada)' }, { value: 'desactivado', label: 'Desactivado' }] },
-    { key: 'welcomeVoiceGender', label: 'Voz del audio grabado', type: 'select', options: [{ value: 'mujer', label: 'Mujer' }, { value: 'hombre', label: 'Hombre' }] },
-    { key: 'welcomeAudioUrl', label: 'Archivo de audio de bienvenida — voz de MUJER (solo se usa si arriba está en "Audio grabado" y la voz es "Mujer")' },
-    { key: 'welcomeAudioUrlHombre', label: 'Archivo de audio de bienvenida — voz de HOMBRE (solo se usa si arriba está en "Audio grabado" y la voz es "Hombre")' },
-    { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (solo se usa si arriba está en "Voz por texto"; usa "..." donde quieras una pausa)' },
+    { key: 'welcomeVoiceMode', label: 'Bienvenida al entrar a la tienda', type: 'select', options: [{ value: 'audio', label: 'Voz por audio' }, { value: 'texto', label: 'Voz por texto' }, { value: 'desactivado', label: 'Desactivado' }] },
+    // Solo si arriba está en "Voz por audio": se reproduce un archivo mp3 real.
+    { key: 'welcomeVoiceGender', label: 'Voz de audio — Mujer / Hombre', type: 'select', options: [{ value: 'mujer', label: 'Mujer' }, { value: 'hombre', label: 'Hombre' }], showIf: (d) => (d.welcomeVoiceMode || 'audio') === 'audio' },
+    { key: 'welcomeAudioUrl', label: 'Archivo de audio — voz de MUJER', showIf: (d) => (d.welcomeVoiceMode || 'audio') === 'audio' },
+    { key: 'welcomeAudioUrlHombre', label: 'Archivo de audio — voz de HOMBRE', showIf: (d) => (d.welcomeVoiceMode || 'audio') === 'audio' },
+    // Solo si arriba está en "Voz por texto": lo lee el navegador (sin mp3).
+    { key: 'welcomeVoiceGenderTexto', label: 'Voz por texto — Mujer / Hombre', type: 'select', options: [{ value: 'mujer', label: 'Mujer' }, { value: 'hombre', label: 'Hombre' }], showIf: (d) => d.welcomeVoiceMode === 'texto' },
+    { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (usa "..." donde quieras una pausa)', showIf: (d) => d.welcomeVoiceMode === 'texto' },
   ] },
   { title: 'Portada', fields: [
     { key: 'eyebrow', label: 'Texto pequeño sobre el título' },
@@ -613,7 +616,7 @@ export function AdminPanel() {
             </div>
             {CONTENT_GROUPS.map((group) => <div className="content-group" key={group.title}>
               <h3>{group.title}</h3>
-              {group.fields.map((field) => <label className="content-field" key={field.key}>
+              {group.fields.filter((field) => !field.showIf || field.showIf(contentDraft)).map((field) => <label className="content-field" key={field.key}>
                 <span>{field.label}</span>
                 {field.type === 'textarea'
                   ? <textarea rows={3} value={contentDraft[field.key] ?? ''} onChange={(event) => setContentDraft((current) => ({ ...current, [field.key]: event.target.value }))} />

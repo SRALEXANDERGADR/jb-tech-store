@@ -31,6 +31,10 @@ const defaultContent: Record<string, string> = {
   welcomeVoiceGender: 'mujer',
   welcomeAudioUrl: '/audio/bienvenida.mp3',
   welcomeAudioUrlHombre: '/audio/bienvenida-hombre.mp3',
+  // Igual que welcomeVoiceGender pero para la voz SINTETIZADA del
+  // navegador (welcomeVoiceMode = 'texto'). 'hombre' es como ya estaba
+  // configurado (preferencia por voz de hombre); se puede cambiar a mujer.
+  welcomeVoiceGenderTexto: 'hombre',
   navHome: 'Inicio',
   navShop: 'Tienda',
   navOffers: 'Ofertas',

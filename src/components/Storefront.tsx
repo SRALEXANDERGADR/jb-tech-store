@@ -243,32 +243,34 @@ function splitIntoVoiceSegments(text: string): VoiceSegment[] {
 }
 
 const MALE_VOICE_HINTS = ['male', 'hombre', 'jorge', 'diego', 'carlos', 'pablo', 'miguel', 'enrique', 'juan', 'fernando', 'andrés', 'andres', 'raúl', 'raul', 'alonso', 'antonio']
+const FEMALE_VOICE_HINTS = ['female', 'mujer', 'mónica', 'monica', 'paulina', 'lucía', 'lucia', 'esperanza', 'sabina', 'elvira', 'conchita', 'lupe', 'maría', 'maria', 'isabela', 'camila', 'valentina']
 
 /** Dice en voz alta un mensaje de bienvenida apenas se carga la tienda,
  * usando la voz nativa del navegador del visitante (no requiere subir
- * ningún archivo de audio). Prefiere una voz de hombre si el dispositivo
- * tiene alguna disponible, habla más despacio, y respeta las pausas
- * marcadas con "..." en el texto para sonar más natural. Los navegadores
- * bloquean a veces el audio automático sin interacción previa del
- * usuario: si eso pasa, el mensaje queda "armado" y se dispara con el
- * primer toque/clic/tecla en la página. */
-function useWelcomeVoice(text: string) {
+ * ningún archivo de audio). Busca una voz de hombre o de mujer según
+ * `gender`, habla más despacio, y respeta las pausas marcadas con "..."
+ * en el texto para sonar más natural. Los navegadores bloquean a veces
+ * el audio automático sin interacción previa del usuario: si eso pasa,
+ * se reintenta con cada toque/clic/tecla siguiente hasta que uno
+ * funcione (no se queda pegado tras el primer intento fallido). */
+function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
   useEffect(() => {
     if (!text.trim()) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
 
-    let started = false
+    let unlocked = false
     let cancelled = false
 
-    const pickMaleSpanishVoice = () => {
+    const pickSpanishVoice = () => {
       const voices = window.speechSynthesis.getVoices()
       const spanish = voices.filter((voice) => voice.lang.toLowerCase().startsWith('es'))
-      const male = spanish.find((voice) => MALE_VOICE_HINTS.some((hint) => voice.name.toLowerCase().includes(hint)))
-      return male || spanish[0] || voices[0]
+      const hints = gender === 'mujer' ? FEMALE_VOICE_HINTS : MALE_VOICE_HINTS
+      const match = spanish.find((voice) => hints.some((hint) => voice.name.toLowerCase().includes(hint)))
+      return match || spanish[0] || voices[0]
     }
 
     const speakSegments = (segments: VoiceSegment[]) => {
-      const voice = pickMaleSpanishVoice()
+      const voice = pickSpanishVoice()
       let i = 0
       const speakNext = () => {
         if (cancelled || i >= segments.length) return
@@ -277,7 +279,7 @@ function useWelcomeVoice(text: string) {
         utterance.lang = 'es-DO'
         if (voice) utterance.voice = voice
         utterance.rate = 0.85 // un poco más lento, ritmo más natural
-        utterance.pitch = 0.85 // un poco más grave
+        utterance.pitch = gender === 'mujer' ? 1.05 : 0.85 // un poco más agudo o más grave según la voz
         utterance.onend = () => {
           i++
           if (segment.pauseAfter > 0) setTimeout(speakNext, segment.pauseAfter)
@@ -289,8 +291,8 @@ function useWelcomeVoice(text: string) {
     }
 
     const start = () => {
-      if (started) return
-      started = true
+      if (unlocked) return
+      unlocked = true
       window.speechSynthesis.cancel()
       speakSegments(splitIntoVoiceSegments(text))
     }
@@ -301,16 +303,22 @@ function useWelcomeVoice(text: string) {
     }
     tryAutoStart()
 
-    window.addEventListener('pointerdown', start, { once: true })
-    window.addEventListener('keydown', start, { once: true })
+    const cleanup = () => {
+      window.removeEventListener('pointerdown', start)
+      window.removeEventListener('keydown', start)
+      window.removeEventListener('touchend', start)
+    }
+
+    window.addEventListener('pointerdown', start)
+    window.addEventListener('keydown', start)
+    window.addEventListener('touchend', start)
 
     return () => {
       cancelled = true
       window.speechSynthesis.removeEventListener('voiceschanged', start)
-      window.removeEventListener('pointerdown', start)
-      window.removeEventListener('keydown', start)
+      cleanup()
     }
-  }, [text])
+  }, [text, gender])
 }
 
 /** Reproduce un archivo de audio de bienvenida real apenas se carga la
@@ -325,23 +333,35 @@ function useWelcomeAudio(url: string) {
 
     const audio = new Audio(url)
     audio.preload = 'auto'
-    let started = false
+    let unlocked = false
 
-    const start = () => {
-      if (started) return
-      started = true
-      audio.play().catch(() => {
-        started = false // el navegador lo bloqueó; se reintenta con la próxima interacción
+    const cleanup = () => {
+      window.removeEventListener('pointerdown', tryPlay)
+      window.removeEventListener('keydown', tryPlay)
+      window.removeEventListener('touchend', tryPlay)
+    }
+
+    // Reintenta en CADA interacción (no solo la primera) hasta que el
+    // navegador realmente deje reproducir el audio. Antes, el listener se
+    // quitaba tras el primer toque aunque play() fallara, así que un
+    // segundo o tercer toque ya no volvía a intentarlo.
+    const tryPlay = () => {
+      if (unlocked) return
+      audio.play().then(() => {
+        unlocked = true
+        cleanup()
+      }).catch(() => {
+        // el navegador lo bloqueó; se reintenta con la próxima interacción
       })
     }
-    start()
+    tryPlay()
 
-    window.addEventListener('pointerdown', start, { once: true })
-    window.addEventListener('keydown', start, { once: true })
+    window.addEventListener('pointerdown', tryPlay)
+    window.addEventListener('keydown', tryPlay)
+    window.addEventListener('touchend', tryPlay)
 
     return () => {
-      window.removeEventListener('pointerdown', start)
-      window.removeEventListener('keydown', start)
+      cleanup()
       audio.pause()
     }
   }, [url])
@@ -353,7 +373,8 @@ export function Storefront({ data }: Props) {
 
   const welcomeMode = copy.welcomeVoiceMode || 'desactivado'
   const welcomeAudioUrl = copy.welcomeVoiceGender === 'hombre' ? (copy.welcomeAudioUrlHombre || '') : (copy.welcomeAudioUrl || '')
-  useWelcomeVoice(welcomeMode === 'texto' ? (copy.welcomeVoiceText || '') : '')
+  const welcomeVoiceGenderTexto = copy.welcomeVoiceGenderTexto === 'mujer' ? 'mujer' : 'hombre'
+  useWelcomeVoice(welcomeMode === 'texto' ? (copy.welcomeVoiceText || '') : '', welcomeVoiceGenderTexto)
   useWelcomeAudio(welcomeMode === 'audio' ? welcomeAudioUrl : '')
 
   const [menuOpen, setMenuOpen] = useState(false)
