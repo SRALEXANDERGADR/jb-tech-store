@@ -242,15 +242,20 @@ function splitIntoVoiceSegments(text: string): VoiceSegment[] {
   return segments
 }
 
+const FEMALE_VOICE_HINTS = ['female', 'mujer', 'maria', 'lucía', 'lucia', 'sofía', 'sofia', 'valentina', 'camila', 'mónica', 'monica', 'elena', 'laura', 'inés', 'ines', 'isabela', 'paulina']
+const MALE_VOICE_HINTS = ['male', 'hombre', 'jorge', 'diego', 'carlos', 'pablo', 'miguel', 'enrique', 'juan', 'fernando', 'andrés', 'andres', 'raúl', 'raul', 'alonso', 'antonio']
+
 /** Dice en voz alta un mensaje de bienvenida apenas se carga la tienda,
  * usando la voz nativa del navegador del visitante (no requiere subir
- * ningún archivo de audio). Prefiere una voz de hombre si el dispositivo
- * tiene alguna disponible, habla más despacio, y respeta las pausas
- * marcadas con "..." en el texto para sonar más natural. Los navegadores
- * bloquean a veces el audio automático sin interacción previa del
- * usuario: si eso pasa, el mensaje queda "armado" y se dispara con el
- * primer toque/clic/tecla en la página. */
-function useWelcomeVoice(text: string) {
+ * ningún archivo de audio). Busca una voz del género elegido en el panel
+ * admin (si el dispositivo tiene alguna con ese nombre); si no encuentra
+ * ninguna, usa la voz en español que haya disponible y ajusta el tono
+ * para acercarse al género pedido. Habla más despacio y respeta las
+ * pausas marcadas con "..." en el texto para sonar más natural. Los
+ * navegadores bloquean a veces el audio automático sin interacción
+ * previa del usuario: si eso pasa, el mensaje queda "armado" y se
+ * dispara con el primer toque/clic/tecla en la página. */
+function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
   useEffect(() => {
     if (!text.trim()) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
@@ -258,16 +263,16 @@ function useWelcomeVoice(text: string) {
     let started = false
     let cancelled = false
 
-    const pickMaleSpanishVoice = () => {
+    const pickVoice = () => {
       const voices = window.speechSynthesis.getVoices()
       const spanish = voices.filter((voice) => voice.lang.toLowerCase().startsWith('es'))
-      const maleHints = ['male', 'hombre', 'jorge', 'diego', 'carlos', 'pablo', 'miguel', 'enrique', 'juan', 'fernando', 'andrés', 'andres', 'raúl', 'raul', 'alonso', 'antonio']
-      const male = spanish.find((voice) => maleHints.some((hint) => voice.name.toLowerCase().includes(hint)))
-      return male || spanish[0] || voices[0]
+      const hints = gender === 'mujer' ? FEMALE_VOICE_HINTS : MALE_VOICE_HINTS
+      const matched = spanish.find((voice) => hints.some((hint) => voice.name.toLowerCase().includes(hint)))
+      return matched || spanish[0] || voices[0]
     }
 
     const speakSegments = (segments: VoiceSegment[]) => {
-      const voice = pickMaleSpanishVoice()
+      const voice = pickVoice()
       let i = 0
       const speakNext = () => {
         if (cancelled || i >= segments.length) return
@@ -276,7 +281,7 @@ function useWelcomeVoice(text: string) {
         utterance.lang = 'es-DO'
         if (voice) utterance.voice = voice
         utterance.rate = 0.85 // un poco más lento, ritmo más natural
-        utterance.pitch = 0.85 // un poco más grave
+        utterance.pitch = gender === 'mujer' ? 1.08 : 0.8 // acerca el tono al género elegido
         utterance.onend = () => {
           i++
           if (segment.pauseAfter > 0) setTimeout(speakNext, segment.pauseAfter)
@@ -309,14 +314,14 @@ function useWelcomeVoice(text: string) {
       window.removeEventListener('pointerdown', start)
       window.removeEventListener('keydown', start)
     }
-  }, [text])
+  }, [text, gender])
 }
 
 export function Storefront({ data }: Props) {
   const { products, content: copy } = data
   const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
 
-  useWelcomeVoice(copy.welcomeVoiceText || '')
+  useWelcomeVoice(copy.welcomeVoiceText || '', copy.welcomeVoiceGender === 'mujer' ? 'mujer' : 'hombre')
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)

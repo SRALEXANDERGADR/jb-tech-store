@@ -101,11 +101,12 @@ function emptyExpenseDraft(): ExpenseDraft {
 const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
 const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
 
-const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' }> }> = [
+const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' | 'select'; options?: Array<{ value: string; label: string }> }> }> = [
   { title: 'Marca', fields: [
     { key: 'brandName', label: 'Nombre de la marca' },
     { key: 'brandTagline', label: 'Eslogan' },
     { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (usa "..." donde quieras una pausa; vacío = desactivado)' },
+    { key: 'welcomeVoiceGender', label: 'Voz de bienvenida', type: 'select', options: [{ value: 'hombre', label: 'Hombre' }, { value: 'mujer', label: 'Mujer' }] },
   ] },
   { title: 'Portada', fields: [
     { key: 'eyebrow', label: 'Texto pequeño sobre el título' },
@@ -613,6 +614,10 @@ export function AdminPanel() {
                 <span>{field.label}</span>
                 {field.type === 'textarea'
                   ? <textarea rows={3} value={contentDraft[field.key] ?? ''} onChange={(event) => setContentDraft((current) => ({ ...current, [field.key]: event.target.value }))} />
+                  : field.type === 'select'
+                  ? <select value={contentDraft[field.key] ?? field.options?.[0]?.value ?? ''} onChange={(event) => setContentDraft((current) => ({ ...current, [field.key]: event.target.value }))}>
+                      {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
                   : <input value={contentDraft[field.key] ?? ''} onChange={(event) => setContentDraft((current) => ({ ...current, [field.key]: event.target.value }))} />}
               </label>)}
             </div>)}
