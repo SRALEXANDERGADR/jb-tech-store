@@ -26,7 +26,11 @@ const defaultContent: Record<string, string> = {
   // sintetizada del navegador; 'desactivado' = no dice nada al entrar.
   // Solo uno de los dos (audio o texto) puede estar activo a la vez.
   welcomeVoiceMode: 'audio',
+  // 'mujer' usa welcomeAudioUrl (la voz actual, sin tocar); 'hombre' usa
+  // welcomeAudioUrlHombre. Solo aplica cuando welcomeVoiceMode = 'audio'.
+  welcomeVoiceGender: 'mujer',
   welcomeAudioUrl: '/audio/bienvenida.mp3',
+  welcomeAudioUrlHombre: '/audio/bienvenida-hombre.mp3',
   navHome: 'Inicio',
   navShop: 'Tienda',
   navOffers: 'Ofertas',

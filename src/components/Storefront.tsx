@@ -352,8 +352,9 @@ export function Storefront({ data }: Props) {
   const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
 
   const welcomeMode = copy.welcomeVoiceMode || 'desactivado'
+  const welcomeAudioUrl = copy.welcomeVoiceGender === 'hombre' ? (copy.welcomeAudioUrlHombre || '') : (copy.welcomeAudioUrl || '')
   useWelcomeVoice(welcomeMode === 'texto' ? (copy.welcomeVoiceText || '') : '')
-  useWelcomeAudio(welcomeMode === 'audio' ? (copy.welcomeAudioUrl || '') : '')
+  useWelcomeAudio(welcomeMode === 'audio' ? welcomeAudioUrl : '')
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)

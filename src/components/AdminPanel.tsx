@@ -106,7 +106,9 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
     { key: 'brandName', label: 'Nombre de la marca' },
     { key: 'brandTagline', label: 'Eslogan' },
     { key: 'welcomeVoiceMode', label: 'Bienvenida al entrar a la tienda', type: 'select', options: [{ value: 'audio', label: 'Audio grabado' }, { value: 'texto', label: 'Voz por texto (sintetizada)' }, { value: 'desactivado', label: 'Desactivado' }] },
-    { key: 'welcomeAudioUrl', label: 'Archivo de audio de bienvenida (solo se usa si arriba está en "Audio grabado")' },
+    { key: 'welcomeVoiceGender', label: 'Voz del audio grabado', type: 'select', options: [{ value: 'mujer', label: 'Mujer' }, { value: 'hombre', label: 'Hombre' }] },
+    { key: 'welcomeAudioUrl', label: 'Archivo de audio de bienvenida — voz de MUJER (solo se usa si arriba está en "Audio grabado" y la voz es "Mujer")' },
+    { key: 'welcomeAudioUrlHombre', label: 'Archivo de audio de bienvenida — voz de HOMBRE (solo se usa si arriba está en "Audio grabado" y la voz es "Hombre")' },
     { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (solo se usa si arriba está en "Voz por texto"; usa "..." donde quieras una pausa)' },
   ] },
   { title: 'Portada', fields: [
