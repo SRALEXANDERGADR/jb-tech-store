@@ -19,6 +19,9 @@ export const CATEGORIES = ['Teléfonos', 'Laptops', 'Accesorios', 'Cargadores y 
 const defaultContent: Record<string, string> = {
   brandName: 'JB TECH STORE',
   brandTagline: 'Tecnología, accesorios y confianza en un solo lugar.',
+  // Mensaje que se dice en voz alta (con la voz del propio navegador del
+  // visitante) apenas entra a la tienda. Vacío = no se dice nada.
+  welcomeVoiceText: 'Bienvenido a JB Tech Store',
   navHome: 'Inicio',
   navShop: 'Tienda',
   navOffers: 'Ofertas',

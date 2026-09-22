@@ -209,9 +209,53 @@ function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: st
   )
 }
 
+/** Dice en voz alta un mensaje de bienvenida apenas se carga la tienda,
+ * usando la voz nativa del navegador del visitante (no requiere subir
+ * ningún archivo de audio). Los navegadores bloquean a veces el audio
+ * automático sin interacción previa del usuario: si eso pasa, el mensaje
+ * queda "armado" y se dispara con el primer toque/clic/tecla en la página. */
+function useWelcomeVoice(text: string) {
+  useEffect(() => {
+    if (!text.trim()) return
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+
+    let spoken = false
+    const speak = () => {
+      if (spoken) return
+      spoken = true
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.lang = 'es-DO'
+      const voices = window.speechSynthesis.getVoices()
+      const spanishVoice = voices.find((voice) => voice.lang.startsWith('es'))
+      if (spanishVoice) utterance.voice = spanishVoice
+      window.speechSynthesis.speak(utterance)
+    }
+
+    const tryAutoSpeak = () => {
+      // Chrome carga la lista de voces de forma asíncrona: si aún no está
+      // lista, se espera al evento 'voiceschanged' antes del primer intento.
+      if (window.speechSynthesis.getVoices().length > 0) speak()
+      else window.speechSynthesis.addEventListener('voiceschanged', speak, { once: true })
+    }
+    tryAutoSpeak()
+
+    window.addEventListener('pointerdown', speak, { once: true })
+    window.addEventListener('keydown', speak, { once: true })
+
+    return () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', speak)
+      window.removeEventListener('pointerdown', speak)
+      window.removeEventListener('keydown', speak)
+    }
+  }, [text])
+}
+
 export function Storefront({ data }: Props) {
   const { products, content: copy } = data
   const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
+
+  useWelcomeVoice(copy.welcomeVoiceText || '')
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
