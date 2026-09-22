@@ -334,15 +334,19 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
   })
 
 export const updateOrder = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: { id: number; name: string; price: number; quantity: number; cost: number }[] }) => data)
+  .inputValidator((data: { id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: { id: number; name: string; price: number; quantity: number; cost: number }[]; discount?: number }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const customerName = data.customerName.trim()
     if (!customerName) throw new Error('El nombre del cliente es obligatorio.')
     if (!data.items.length) throw new Error('El pedido debe tener al menos un producto.')
     const items = data.items.map((item) => ({ ...item, price: Math.max(0, Math.round(item.price)), quantity: Math.max(1, Math.round(item.quantity)) }))
-    const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
-    await db.update(orders).set({ customerName, email: data.email.trim(), phone: data.phone.trim(), address: data.address.trim(), notes: data.notes.trim(), items, total }).where(eq(orders.id, data.id))
+    const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    // El descuento nunca puede ser negativo ni superar el subtotal, para
+    // que el total del pedido jamás quede en números rojos.
+    const discount = Math.min(subtotal, Math.max(0, Math.round(data.discount ?? 0)))
+    const total = subtotal - discount
+    await db.update(orders).set({ customerName, email: data.email.trim(), phone: data.phone.trim(), address: data.address.trim(), notes: data.notes.trim(), items, discount, total }).where(eq(orders.id, data.id))
     return true
   })
 

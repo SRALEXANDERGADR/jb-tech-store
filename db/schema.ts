@@ -68,6 +68,10 @@ export const orders = pgTable('orders', {
   // (copia, no referencia) — así la Ganancia de un pedido ya hecho no
   // cambia si más adelante compras ese mismo producto a otro costo.
   items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number }>>(),
+  // Descuento manual aplicado por el admin al negociar con el cliente
+  // (en centavos). 0 = sin descuento. `total` ya sale con el descuento
+  // restado — se recalcula en el servidor cada vez que se edita el pedido.
+  discount: integer('discount').notNull().default(0),
   total: integer('total').notNull(),
   status: text('status').notNull().default('Pendiente'), // Pendiente, Confirmado, Preparando, Enviado, Entregado, Cancelado
   paymentStatus: text('payment_status').notNull().default('Pendiente'), // Pendiente, Pagado

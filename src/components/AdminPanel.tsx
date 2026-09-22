@@ -17,7 +17,7 @@ const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-di
 
 type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
 type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number }
-type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
+type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
 
@@ -68,6 +68,12 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
     y += 22
   }
   y += 8; doc.setDrawColor(220); doc.line(40, y, 555, y); y += 24
+  if (order.discount > 0) {
+    const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(30)
+    doc.text('Subtotal', 40, y); doc.text(money(subtotal), 555, y, { align: 'right' }); y += 18
+    doc.text('Descuento', 40, y); doc.text(`-${money(order.discount)}`, 555, y, { align: 'right' }); y += 22
+  }
   doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
   doc.text('Total', 40, y); doc.text(money(order.total), 555, y, { align: 'right' })
 
@@ -176,7 +182,7 @@ export function AdminPanel() {
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({})
   const [editingPurchase, setEditingPurchase] = useState<PurchaseDraft | null>(null)
   const [editingExpense, setEditingExpense] = useState<ExpenseDraft | null>(null)
-  const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[] } | null>(null)
+  const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[]; discount: number } | null>(null)
   const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
 
   async function refresh() {
@@ -308,6 +314,7 @@ export function AdminPanel() {
         address: editingOrder.address,
         notes: editingOrder.notes,
         items: editingOrder.items,
+        discount: editingOrder.discount,
       } })
       setEditingOrder(null)
     })
@@ -549,7 +556,7 @@ export function AdminPanel() {
                 <div className="admin-order-head">
                   <div><strong>{order.orderNumber}</strong><span>{dateFmt(order.createdAt)}</span></div>
                   <div className="admin-order-actions">
-                    <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })) })}><Pencil size={15} /></button>
+                    <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })), discount: order.discount })}><Pencil size={15} /></button>
                     <button className="icon-button" title="Descargar factura (PDF)" disabled={busy} onClick={() => handleDownloadInvoice(order)}><Download size={15} /></button>
                     <button className="icon-button" title="Compartir factura" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
                     <button className="icon-button" onClick={() => { if (window.confirm('¿Enviar este pedido a la papelera?')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
@@ -564,6 +571,7 @@ export function AdminPanel() {
                   <select value={order.paymentStatus} onChange={(event) => withBusy(() => updateOrderStatus({ data: { id: order.id, status: order.status, paymentStatus: event.target.value } }))}>
                     {PAYMENT_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
                   </select>
+                  {order.discount > 0 && <span className="order-discount-tag">Descuento -{money(order.discount)}</span>}
                   <strong>{money(order.total)}</strong>
                 </div>
               </div>)}
@@ -737,7 +745,15 @@ export function AdminPanel() {
               <button type="button" className="icon-button" disabled={editingOrder.items.length <= 1} onClick={() => setEditingOrder((current) => current && { ...current, items: current.items.filter((_, rowIndex) => rowIndex !== index) })}><X size={14} /></button>
             </div>
           ))}
-          <p className="order-edit-total">Nuevo total: <strong>{money(editingOrder.items.reduce((sum, item) => sum + item.price * item.quantity, 0))}</strong></p>
+          {(() => {
+            const subtotal = editingOrder.items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+            const discount = Math.min(subtotal, editingOrder.discount)
+            return <>
+              <label>Descuento (RD$, opcional)<input type="number" min={0} step="0.01" value={editingOrder.discount / 100} onChange={(event) => setEditingOrder((current) => current && { ...current, discount: Math.round(Math.max(0, Number(event.target.value)) * 100) })} /></label>
+              <p className="admin-hint"><AlertTriangle size={14} />Se resta del subtotal y queda reflejado como una línea aparte en la factura — no afecta el precio guardado de cada producto.</p>
+              <p className="order-edit-total">Subtotal: {money(subtotal)}{discount > 0 && <> · Descuento: -{money(discount)}</>} · Nuevo total: <strong>{money(subtotal - discount)}</strong></p>
+            </>
+          })()}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar cambios'}</button>
         </form>
