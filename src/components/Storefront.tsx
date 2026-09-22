@@ -209,44 +209,105 @@ function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: st
   )
 }
 
+type VoiceSegment = { text: string; pauseAfter: number }
+
+/** Divide el texto en fragmentos que se leen uno tras otro con pequeñas
+ * pausas entre sí. Usa "..." en el texto para marcar dónde quieres una
+ * pausa (el primer "..." deja una pausa un poco más larga, tipo respiro
+ * inicial; los siguientes son más cortos). Los puntos y comas normales
+ * también generan una pausa breve de forma natural. */
+function splitIntoVoiceSegments(text: string): VoiceSegment[] {
+  const parts = text.split(/(\.\.\.|[.!?]+|,)/).filter((part) => part.trim() !== '')
+  const segments: VoiceSegment[] = []
+  let buffer = ''
+  let ellipsisCount = 0
+  for (const part of parts) {
+    if (part === '...') {
+      ellipsisCount++
+      if (buffer.trim()) segments.push({ text: buffer.trim(), pauseAfter: ellipsisCount === 1 ? 520 : 320 })
+      buffer = ''
+    } else if (/^[.!?]+$/.test(part)) {
+      buffer += part
+      segments.push({ text: buffer.trim(), pauseAfter: 400 })
+      buffer = ''
+    } else if (part === ',') {
+      buffer += part
+      segments.push({ text: buffer.trim(), pauseAfter: 220 })
+      buffer = ''
+    } else {
+      buffer += part
+    }
+  }
+  if (buffer.trim()) segments.push({ text: buffer.trim(), pauseAfter: 0 })
+  return segments
+}
+
 /** Dice en voz alta un mensaje de bienvenida apenas se carga la tienda,
  * usando la voz nativa del navegador del visitante (no requiere subir
- * ningún archivo de audio). Los navegadores bloquean a veces el audio
- * automático sin interacción previa del usuario: si eso pasa, el mensaje
- * queda "armado" y se dispara con el primer toque/clic/tecla en la página. */
+ * ningún archivo de audio). Prefiere una voz de hombre si el dispositivo
+ * tiene alguna disponible, habla más despacio, y respeta las pausas
+ * marcadas con "..." en el texto para sonar más natural. Los navegadores
+ * bloquean a veces el audio automático sin interacción previa del
+ * usuario: si eso pasa, el mensaje queda "armado" y se dispara con el
+ * primer toque/clic/tecla en la página. */
 function useWelcomeVoice(text: string) {
   useEffect(() => {
     if (!text.trim()) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
 
-    let spoken = false
-    const speak = () => {
-      if (spoken) return
-      spoken = true
-      window.speechSynthesis.cancel()
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = 'es-DO'
+    let started = false
+    let cancelled = false
+
+    const pickMaleSpanishVoice = () => {
       const voices = window.speechSynthesis.getVoices()
-      const spanishVoice = voices.find((voice) => voice.lang.startsWith('es'))
-      if (spanishVoice) utterance.voice = spanishVoice
-      window.speechSynthesis.speak(utterance)
+      const spanish = voices.filter((voice) => voice.lang.toLowerCase().startsWith('es'))
+      const maleHints = ['male', 'hombre', 'jorge', 'diego', 'carlos', 'pablo', 'miguel', 'enrique', 'juan', 'fernando', 'andrés', 'andres', 'raúl', 'raul', 'alonso', 'antonio']
+      const male = spanish.find((voice) => maleHints.some((hint) => voice.name.toLowerCase().includes(hint)))
+      return male || spanish[0] || voices[0]
     }
 
-    const tryAutoSpeak = () => {
-      // Chrome carga la lista de voces de forma asíncrona: si aún no está
-      // lista, se espera al evento 'voiceschanged' antes del primer intento.
-      if (window.speechSynthesis.getVoices().length > 0) speak()
-      else window.speechSynthesis.addEventListener('voiceschanged', speak, { once: true })
+    const speakSegments = (segments: VoiceSegment[]) => {
+      const voice = pickMaleSpanishVoice()
+      let i = 0
+      const speakNext = () => {
+        if (cancelled || i >= segments.length) return
+        const segment = segments[i]
+        const utterance = new SpeechSynthesisUtterance(segment.text)
+        utterance.lang = 'es-DO'
+        if (voice) utterance.voice = voice
+        utterance.rate = 0.85 // un poco más lento, ritmo más natural
+        utterance.pitch = 0.85 // un poco más grave
+        utterance.onend = () => {
+          i++
+          if (segment.pauseAfter > 0) setTimeout(speakNext, segment.pauseAfter)
+          else speakNext()
+        }
+        window.speechSynthesis.speak(utterance)
+      }
+      speakNext()
     }
-    tryAutoSpeak()
 
-    window.addEventListener('pointerdown', speak, { once: true })
-    window.addEventListener('keydown', speak, { once: true })
+    const start = () => {
+      if (started) return
+      started = true
+      window.speechSynthesis.cancel()
+      speakSegments(splitIntoVoiceSegments(text))
+    }
+
+    const tryAutoStart = () => {
+      if (window.speechSynthesis.getVoices().length > 0) start()
+      else window.speechSynthesis.addEventListener('voiceschanged', start, { once: true })
+    }
+    tryAutoStart()
+
+    window.addEventListener('pointerdown', start, { once: true })
+    window.addEventListener('keydown', start, { once: true })
 
     return () => {
-      window.speechSynthesis.removeEventListener('voiceschanged', speak)
-      window.removeEventListener('pointerdown', speak)
-      window.removeEventListener('keydown', speak)
+      cancelled = true
+      window.speechSynthesis.removeEventListener('voiceschanged', start)
+      window.removeEventListener('pointerdown', start)
+      window.removeEventListener('keydown', start)
     }
   }, [text])
 }

@@ -105,7 +105,7 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
   { title: 'Marca', fields: [
     { key: 'brandName', label: 'Nombre de la marca' },
     { key: 'brandTagline', label: 'Eslogan' },
-    { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (vacío = desactivado)' },
+    { key: 'welcomeVoiceText', label: 'Mensaje de bienvenida por voz (usa "..." donde quieras una pausa; vacío = desactivado)' },
   ] },
   { title: 'Portada', fields: [
     { key: 'eyebrow', label: 'Texto pequeño sobre el título' },
