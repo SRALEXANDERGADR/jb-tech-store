@@ -192,6 +192,7 @@ export function AdminPanel() {
   const [editingExpense, setEditingExpense] = useState<ExpenseDraft | null>(null)
   const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[]; discount: number } | null>(null)
   const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
+  const [browserVoices, setBrowserVoices] = useState<string[] | null>(null)
 
   async function refresh() {
     const adminData = await getAdminData()
@@ -208,6 +209,23 @@ export function AdminPanel() {
       setAuthenticated(ok)
       if (ok) await refresh().catch((caught) => setError(caught instanceof Error ? caught.message : 'No pudimos cargar los datos.'))
     })
+  }, [])
+
+  // Muestra qué voces en español expone de verdad el navegador donde se
+  // abre este panel (no las del visitante). Sirve para entender por qué
+  // "Mujer/Hombre" a veces suena igual: muchos Android/Chrome solo traen
+  // UNA voz en español instalada, así que no hay entre qué elegir todavía.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    const readVoices = () => {
+      const names = window.speechSynthesis.getVoices()
+        .filter((voice) => voice.lang.toLowerCase().startsWith('es'))
+        .map((voice) => `${voice.name} (${voice.lang})`)
+      setBrowserVoices(names)
+    }
+    readVoices()
+    window.speechSynthesis.addEventListener('voiceschanged', readVoices)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', readVoices)
   }, [])
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
@@ -626,6 +644,17 @@ export function AdminPanel() {
                     </select>
                   : <input value={contentDraft[field.key] ?? ''} onChange={(event) => setContentDraft((current) => ({ ...current, [field.key]: event.target.value }))} />}
               </label>)}
+              {group.title === 'Marca' && contentDraft.welcomeVoiceMode === 'texto' && (
+                <p className="content-hint">
+                  {browserVoices === null
+                    ? 'Buscando voces en español en este navegador…'
+                    : browserVoices.length === 0
+                    ? 'Este navegador (el tuyo, ahora mismo) no tiene ninguna voz en español instalada.'
+                    : browserVoices.length === 1
+                    ? `Este navegador solo tiene UNA voz en español instalada: ${browserVoices[0]}. Por eso "Mujer/Hombre" apenas cambia el tono, no la voz — para que suene realmente distinto hay que instalar más voces en el teléfono (Ajustes → Voz a texto) o usar "Voz por audio" con un mp3 real.`
+                    : `Voces en español que este navegador tiene disponibles: ${browserVoices.join(', ')}.`}
+                </p>
+              )}
             </div>)}
           </section>
         )}
