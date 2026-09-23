@@ -15,7 +15,7 @@ import {
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
 const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 
-type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
+type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
 type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
@@ -84,7 +84,7 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
 type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; notes: string; createdAt: string }
 type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
 type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
-type ProductDraft = { id?: number; name: string; category: string; description: string; options: string; price: string; originalPrice: string; stock: string; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
+type ProductDraft = { id?: number; name: string; category: string; description: string; options: string; price: string; originalPrice: string; stock: string; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
 type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
@@ -168,12 +168,16 @@ function daysLeft(deletedAt: string) {
   return Math.max(0, 30 - Math.floor(elapsed / 86400000))
 }
 
+function parseOptions(options: string) {
+  return options.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
 function emptyDraft(): ProductDraft {
-  return { name: '', category: CATEGORIES[0], description: '', options: '', price: '', originalPrice: '', stock: '0', image: '', featured: false, isNew: false, bestSeller: false, active: true }
+  return { name: '', category: CATEGORIES[0], description: '', options: '', price: '', originalPrice: '', stock: '0', image: '', variantImages: [], featured: false, isNew: false, bestSeller: false, active: true }
 }
 
 function toDraft(product: Product): ProductDraft {
-  return { id: product.id, name: product.name, category: product.category, description: product.description, options: product.options, price: String(product.price / 100), originalPrice: product.originalPrice ? String(product.originalPrice / 100) : '', stock: String(product.stock), image: product.image, featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active }
+  return { id: product.id, name: product.name, category: product.category, description: product.description, options: product.options, price: String(product.price / 100), originalPrice: product.originalPrice ? String(product.originalPrice / 100) : '', stock: String(product.stock), image: product.image, variantImages: product.variantImages || [], featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active }
 }
 
 export function AdminPanel() {
@@ -185,6 +189,7 @@ export function AdminPanel() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadingVariant, setUploadingVariant] = useState<string | null>(null)
   const [editing, setEditing] = useState<ProductDraft | null>(null)
   const [editingCustomer, setEditingCustomer] = useState<CustomerDraft | null>(null)
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({})
@@ -276,6 +281,7 @@ export function AdminPanel() {
         originalPrice: Math.round(Number(editing.originalPrice || 0) * 100),
         stock: Math.round(Number(editing.stock || 0)),
         image: editing.image,
+        variantImages: editing.variantImages,
         featured: editing.featured,
         isNew: editing.isNew,
         bestSeller: editing.bestSeller,
@@ -299,6 +305,37 @@ export function AdminPanel() {
       setUploading(false)
       event.target.value = ''
     }
+  }
+
+  function upsertVariant(option: string, patch: Partial<{ image: string; description: string }>) {
+    setEditing((current) => {
+      if (!current) return current
+      const idx = current.variantImages.findIndex((entry) => entry.option === option)
+      const variantImages = idx === -1
+        ? [...current.variantImages, { option, image: '', description: '', ...patch }]
+        : current.variantImages.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry))
+      return { ...current, variantImages }
+    })
+  }
+
+  async function handleVariantImageChange(option: string, event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file || !editing) return
+    setUploadingVariant(option)
+    setError('')
+    try {
+      const url = await uploadFile(file)
+      upsertVariant(option, { image: url })
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'No pudimos subir la imagen.')
+    } finally {
+      setUploadingVariant(null)
+      event.target.value = ''
+    }
+  }
+
+  function handleRemoveVariantImage(option: string) {
+    setEditing((current) => current && { ...current, variantImages: current.variantImages.filter((entry) => entry.option !== option) })
   }
 
   async function handleSaveCustomer(event: FormEvent<HTMLFormElement>) {
@@ -561,7 +598,7 @@ export function AdminPanel() {
             <div className="admin-table">
               {filteredProducts.map((product) => <div className="admin-row admin-row-product" key={product.id}>
                 <img src={product.image || '/logo.png'} alt="" />
-                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}</span></div>
+                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}{product.variantImages?.length > 0 && ` · ${product.variantImages.length} con foto propia`}</span></div>
                 <div className="admin-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<strong>{money(product.price)}</strong></div>
                 <div className="admin-row-actions">
                   <button onClick={() => setEditing(toDraft(product))}><Pencil size={15} /></button>
@@ -725,6 +762,25 @@ export function AdminPanel() {
           </label>
           <label>Descripción<textarea rows={3} value={editing.description} onChange={(event) => setEditing((current) => current && { ...current, description: event.target.value })} /></label>
           <label>Opciones (colores/diseños, separadas por coma — déjalo vacío si no aplica)<input value={editing.options} onChange={(event) => setEditing((current) => current && { ...current, options: event.target.value })} placeholder="Ej. Negro, Azul, Transparente" /></label>
+          {parseOptions(editing.options).length > 0 && (
+            <div className="variant-images">
+              <p className="content-hint" style={{ margin: '0 0 4px' }}>Foto y descripción por opción (opcional). Si una opción se deja sin foto, en la tienda se usa la foto general de arriba.</p>
+              {parseOptions(editing.options).map((option) => {
+                const entry = editing.variantImages.find((item) => item.option === option)
+                return (
+                  <div className="variant-image-row" key={option}>
+                    <strong>{option}</strong>
+                    <div className="image-upload">
+                      {entry?.image && <img src={entry.image} alt={option} />}
+                      <label className="upload-button">{uploadingVariant === option ? 'Subiendo…' : <><Upload size={14} />{entry?.image ? 'Cambiar foto' : 'Subir foto'}</>}<input type="file" accept="image/*" hidden onChange={(event) => handleVariantImageChange(option, event)} disabled={uploadingVariant === option} /></label>
+                      {entry && <button type="button" className="variant-remove-button" onClick={() => handleRemoveVariantImage(option)}>Quitar</button>}
+                    </div>
+                    <input value={entry?.description ?? ''} onChange={(event) => upsertVariant(option, { description: event.target.value })} placeholder={`Descripción para "${option}" (opcional)`} />
+                  </div>
+                )
+              })}
+            </div>
+          )}
           <div className="form-row">
             <label>Precio de venta (RD$)<input required type="number" min={0} step="0.01" value={editing.price} onChange={(event) => setEditing((current) => current && { ...current, price: event.target.value })} /></label>
             <label>Precio anterior (RD$, opcional)<input type="number" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} /></label>

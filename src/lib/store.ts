@@ -173,6 +173,9 @@ async function cleanupExpired() {
     for (const product of expiredProducts) {
       await db.delete(products).where(eq(products.id, product.id))
       if (product.image) await trashImage(product.image, 'Producto eliminado definitivamente tras 30 días en papelera')
+      for (const variant of product.variantImages || []) {
+        if (variant.image) await trashImage(variant.image, 'Producto eliminado definitivamente tras 30 días en papelera')
+      }
     }
   } catch { /* se reintenta en el próximo acceso al panel */ }
 
@@ -302,15 +305,25 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
 // ADMIN — catálogo
 // ───────────────────────────────────────────────────────────────────────
 export const saveProduct = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
+  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const name = data.name.trim()
     if (!name) throw new Error('El nombre del producto es obligatorio.')
-    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: (data.options || '').trim(), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock: Math.max(0, Math.round(data.stock)), image: data.image, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
+    // Solo se guardan entradas que de verdad coincidan con una opción
+    // vigente y que tengan al menos imagen o descripción — así, si luego
+    // se borra o se renombra una opción en el campo de arriba, su
+    // imagen/descripción huérfana no se queda guardada sin poder editarse.
+    const validOptions = new Set((data.options || '').split(',').map((item) => item.trim()).filter(Boolean))
+    const variantImages = (data.variantImages || []).filter((entry) => validOptions.has(entry.option) && (entry.image || entry.description))
+    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: (data.options || '').trim(), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock: Math.max(0, Math.round(data.stock)), image: data.image, variantImages, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
     if (data.id) {
-      const [previous] = await db.select({ image: products.image }).from(products).where(eq(products.id, data.id)).limit(1)
+      const [previous] = await db.select({ image: products.image, variantImages: products.variantImages }).from(products).where(eq(products.id, data.id)).limit(1)
       if (previous && previous.image && previous.image !== data.image) await trashImage(previous.image, 'Imagen reemplazada')
+      const keptUrls = new Set(variantImages.map((entry) => entry.image).filter(Boolean))
+      for (const old of previous?.variantImages || []) {
+        if (old.image && !keptUrls.has(old.image)) await trashImage(old.image, 'Imagen de opción reemplazada')
+      }
       await db.update(products).set(values).where(eq(products.id, data.id))
       return data.id
     }
@@ -332,9 +345,12 @@ export const restoreProduct = createServerFn({ method: 'POST' }).inputValidator(
 
 export const purgeProduct = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
-  const [product] = await db.select({ image: products.image }).from(products).where(eq(products.id, data)).limit(1)
+  const [product] = await db.select({ image: products.image, variantImages: products.variantImages }).from(products).where(eq(products.id, data)).limit(1)
   await db.delete(products).where(eq(products.id, data))
   if (product?.image) await trashImage(product.image, 'Producto eliminado definitivamente desde la papelera')
+  for (const variant of product?.variantImages || []) {
+    if (variant.image) await trashImage(variant.image, 'Producto eliminado definitivamente desde la papelera')
+  }
   return true
 })
 

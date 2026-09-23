@@ -25,6 +25,13 @@ export const products = pgTable('products', {
   // edita a mano desde el formulario del producto.
   cost: integer('cost').notNull().default(0),
   image: text('image').notNull().default(''),
+  // Imagen y descripción específicas por opción (color/diseño/modelo,
+  // ej. "Batman" o "iPhone 14 Pro Max"). Cada entrada debe coincidir
+  // EXACTO con uno de los valores separados por coma en `options`. Si una
+  // opción no tiene entrada aquí, la tienda usa la imagen y la
+  // descripción generales del producto (arriba) como hasta ahora — no
+  // reemplaza `options`, solo lo enriquece opción por opción.
+  variantImages: jsonb('variant_images').notNull().default([]).$type<Array<{ option: string; image: string; description: string }>>(),
   featured: boolean('featured').notNull().default(false), // pestaña Destacados
   isNew: boolean('is_new').notNull().default(false), // pestaña Nuevos
   bestSeller: boolean('best_seller').notNull().default(false), // pestaña Más vendidos

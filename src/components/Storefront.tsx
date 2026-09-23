@@ -19,6 +19,7 @@ type Product = {
   originalPrice: number
   stock: number
   image: string
+  variantImages: Array<{ option: string; image: string; description: string }>
   featured: boolean
   isNew: boolean
   bestSeller: boolean
@@ -26,6 +27,15 @@ type Product = {
 type Props = { data: { products: Product[]; content: Record<string, string> } }
 
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
+
+/** Busca la foto/descripción propia de una opción elegida (color, diseño,
+ * modelo de iPhone, etc.). Si esa opción no tiene una foto propia subida
+ * desde el admin, devuelve undefined y quien llama cae de vuelta a la
+ * foto/descripción general del producto — así los productos que nunca
+ * usaron esto siguen funcionando exactamente igual que antes. */
+function variantFor(product: Product, option: string) {
+  return option ? (product.variantImages || []).find((entry) => entry.option === option) : undefined
+}
 
 const CATEGORY_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   'Teléfonos': Smartphone,
@@ -85,18 +95,19 @@ function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (pro
   const Icon = categoryIcon(product.category)
   const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
   const [selected, setSelected] = useState(options[0] ?? '')
+  const variant = variantFor(product, selected)
   return (
     <article className="product-card reveal">
       <div className="product-card-media" onClick={() => onView(product)}>
         <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
         {product.stock === 0 && <span className="stock-badge">Agotado</span>}
-        <img src={product.image} alt={product.name} loading="lazy" />
+        <img src={variant?.image || product.image} alt={product.name} loading="lazy" />
         <button type="button" className="product-card-view-button" onClick={(event) => { event.stopPropagation(); onView(product) }} aria-label={`Ver detalles de ${product.name}`}><Eye size={15} /></button>
       </div>
       <div className="product-card-body">
         <p className="product-card-category"><Icon size={13} />{product.category}</p>
         <h3>{product.name}</h3>
-        {product.description && <p className="product-card-description">{product.description}</p>}
+        {(variant?.description || product.description) && <p className="product-card-description">{variant?.description || product.description}</p>}
         {options.length > 0 && (
           <div className="product-card-options">
             <label>Elige una opción</label>
@@ -125,6 +136,7 @@ function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd
   const Icon = categoryIcon(product.category)
   const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
   const [selected, setSelected] = useState(options[0] ?? '')
+  const variant = variantFor(product, selected)
   return (
     <div className="modal-wrap" onClick={onClose}>
       <div className="modal-card product-quickview" onClick={(event) => event.stopPropagation()}>
@@ -132,12 +144,12 @@ function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd
         <div className="product-quickview-media">
           <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
           {product.stock === 0 && <span className="stock-badge">Agotado</span>}
-          <img src={product.image} alt={product.name} />
+          <img src={variant?.image || product.image} alt={product.name} />
         </div>
         <div className="product-quickview-body">
           <p className="product-card-category"><Icon size={13} />{product.category}</p>
           <h2>{product.name}</h2>
-          {product.description && <p className="product-quickview-description">{product.description}</p>}
+          {(variant?.description || product.description) && <p className="product-quickview-description">{variant?.description || product.description}</p>}
           {options.length > 0 && (
             <div className="product-card-options">
               <label>Elige una opción</label>
@@ -412,11 +424,13 @@ export function Storefront({ data }: Props) {
   const subtotal = cart.reduce((sum, line) => sum + line.price * line.quantity, 0)
 
   const addToCart = (product: Product, option?: string) => {
+    const variant = option ? variantFor(product, option) : undefined
     const name = option ? `${product.name} — ${option}` : product.name
+    const image = variant?.image || product.image
     setCart((current) => {
       const existing = current.find((line) => line.productId === product.id && line.name === name)
       if (existing) return current.map((line) => line === existing ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
-      return [...current, { productId: product.id, name, price: product.price, quantity: 1, image: product.image }]
+      return [...current, { productId: product.id, name, price: product.price, quantity: 1, image }]
     })
     setCartOpen(true)
   }
