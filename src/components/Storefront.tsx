@@ -91,6 +91,34 @@ function DiscountBadge({ price, originalPrice }: { price: number; originalPrice:
   return <span className="discount-badge">-{percent}%</span>
 }
 
+/** Fila de miniaturas para elegir color/modelo/diseño (estilo Temu): si
+ * esa opción tiene foto propia subida desde el admin, se muestra como
+ * cuadrito de imagen; si no, cae en una píldora de texto. Un solo
+ * componente compartido entre la tarjeta y la vista ampliada para que
+ * ambas se comporten exactamente igual. */
+function OptionSwatches({ product, options, selected, onSelect }: { product: Product; options: string[]; selected: string; onSelect: (option: string) => void }) {
+  if (options.length === 0) return null
+  return (
+    <div className="option-swatches">
+      {options.map((option) => {
+        const variant = variantFor(product, option)
+        return (
+          <button
+            type="button"
+            key={option}
+            className={`option-swatch ${option === selected ? 'active' : ''} ${variant?.image ? 'has-image' : ''}`}
+            onClick={(event) => { event.stopPropagation(); onSelect(option) }}
+            title={option}
+            aria-label={option}
+          >
+            {variant?.image ? <img src={variant.image} alt={option} /> : <span>{option}</span>}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (product: Product, option?: string) => void; onView: (product: Product) => void }) {
   const Icon = categoryIcon(product.category)
   const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
@@ -108,14 +136,7 @@ function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (pro
         <p className="product-card-category"><Icon size={13} />{product.category}</p>
         <h3>{product.name}</h3>
         {(variant?.description || product.description) && <p className="product-card-description">{variant?.description || product.description}</p>}
-        {options.length > 0 && (
-          <div className="product-card-options">
-            <label>Elige una opción</label>
-            <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-              {options.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </div>
-        )}
+        <OptionSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
         <div className="product-card-price">
           {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
           <strong>{money(product.price)}</strong>
@@ -150,14 +171,7 @@ function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd
           <p className="product-card-category"><Icon size={13} />{product.category}</p>
           <h2>{product.name}</h2>
           {(variant?.description || product.description) && <p className="product-quickview-description">{variant?.description || product.description}</p>}
-          {options.length > 0 && (
-            <div className="product-card-options">
-              <label>Elige una opción</label>
-              <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-                {options.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </div>
-          )}
+          <OptionSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
           <div className="product-card-price">
             {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
             <strong>{money(product.price)}</strong>
@@ -403,6 +417,8 @@ export function Storefront({ data }: Props) {
   const [sharingImage, setSharingImage] = useState(false)
   const [error, setError] = useState('')
   const [quickView, setQuickView] = useState<Product | null>(null)
+  const [toast, setToast] = useState('')
+  const toastTimer = useRef<number | null>(null)
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
@@ -432,7 +448,12 @@ export function Storefront({ data }: Props) {
       if (existing) return current.map((line) => line === existing ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
       return [...current, { productId: product.id, name, price: product.price, quantity: 1, image }]
     })
-    setCartOpen(true)
+    // En vez de abrir el carrito y sacar al cliente de lo que estaba viendo,
+    // se agrega en segundo plano y solo se avisa con un mensaje que
+    // desaparece solo — así puede seguir comprando sin interrupciones.
+    setToast(`${name} agregado`)
+    if (toastTimer.current) window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(''), 2200)
   }
 
   const changeQuantity = (id: number, delta: number) => setCart((current) => current.flatMap((line) => {
@@ -508,6 +529,7 @@ export function Storefront({ data }: Props) {
   useScrollReveal([visibleProducts.length, offersProducts.length, category, query])
 
   return <div className="site-shell">
+    {toast && <div className="add-toast" role="status"><Check size={15} />{toast}</div>}
     <header className="topbar">
       <div className="topbar-left">
         <button className="icon-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menú"><Menu /></button>
