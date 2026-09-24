@@ -3,12 +3,12 @@ import type { ChangeEvent, ComponentType, FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   AlertTriangle, Check, ChevronLeft, Download, LayoutDashboard, ListOrdered, LogOut, Package,
-  Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, Trash2, Upload, Users, Wallet, X,
+  Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, ShoppingCart, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
   CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deletePurchase, deleteProduct,
   getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
-  recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
+  recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
   saveProduct, updateOrder, updateOrderStatus,
 } from '@/lib/store'
 
@@ -88,6 +88,11 @@ type ProductDraft = { id?: number; name: string; category: string; description: 
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
 type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
+type SaleLine = { productId: string; option: string; quantity: string; price: string }
+type SaleDraft = { customerName: string; phone: string; notes: string; paymentStatus: string; lines: SaleLine[] }
+function emptySaleLine(product?: Product): SaleLine {
+  return { productId: product ? String(product.id) : '', option: product ? (parseOptions(product.options)[0] ?? '') : '', quantity: '1', price: product ? String(product.price / 100) : '' }
+}
 type CatalogFilter = 'todos' | 'agotados' | 'bajo' | 'sincosto' | 'ocultos'
 const CATALOG_FILTERS: Array<{ id: CatalogFilter; label: string }> = [
   { id: 'todos', label: 'Todos' },
@@ -236,6 +241,8 @@ export function AdminPanel() {
   const [expenseLimit, setExpenseLimit] = useState(15)
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('todos')
   const [catalogCategory, setCatalogCategory] = useState('')
+  const [saleDraft, setSaleDraft] = useState<SaleDraft | null>(null)
+  const [notice, setNotice] = useState('')
 
   async function refresh() {
     const adminData = await getAdminData()
@@ -443,6 +450,31 @@ export function AdminPanel() {
     })
   }
 
+  function openSale(product?: Product) {
+    setNotice('')
+    setSaleDraft({ customerName: '', phone: '', notes: '', paymentStatus: 'Pagado', lines: [emptySaleLine(product)] })
+  }
+
+  function updateSaleLine(index: number, patch: Partial<SaleLine>) {
+    setSaleDraft((current) => current && { ...current, lines: current.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)) })
+  }
+
+  async function handleSaveSale(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!saleDraft) return
+    await withBusy(async () => {
+      const result = await recordManualSale({ data: {
+        customerName: saleDraft.customerName,
+        phone: saleDraft.phone,
+        notes: saleDraft.notes,
+        paymentStatus: saleDraft.paymentStatus,
+        items: saleDraft.lines.map((line) => ({ productId: Number(line.productId), option: line.option, quantity: Math.round(Number(line.quantity || 0)), price: Math.round(Number(line.price || 0) * 100) })),
+      } })
+      setSaleDraft(null)
+      setNotice(`Venta ${result.orderNumber} registrada por ${money(result.total)}. Ya se descontó del stock y cuenta en Finanzas.`)
+    })
+  }
+
   async function handleSaveExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editingExpense) return
@@ -555,6 +587,7 @@ export function AdminPanel() {
 
       <main className="admin-main">
         {error && <p className="form-error admin-error">{error}</p>}
+        {notice && <p className="admin-notice"><Check size={15} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Cerrar"><X size={14} /></button></p>}
 
         {tab === 'resumen' && (
           <section>
@@ -594,6 +627,7 @@ export function AdminPanel() {
             <div className="admin-section-head">
               <h2>Finanzas</h2>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="primary-button" onClick={() => openSale()}><ShoppingCart size={16} />Registrar venta</button>
                 <button className="primary-button" onClick={() => setEditingExpense(emptyExpenseDraft())}><Plus size={16} />Registrar gasto</button>
                 <button className="primary-button" onClick={() => setEditingPurchase(emptyPurchaseDraft())}><ShoppingBag size={16} />Registrar compra</button>
               </div>
@@ -715,6 +749,7 @@ export function AdminPanel() {
                   <div className="prod-row-actions">
                     <button type="button" onClick={() => setEditing(toDraft(product))}><Pencil size={14} />Editar</button>
                     <button type="button" onClick={() => setEditingPurchase({ ...emptyPurchaseDraft(), productId: String(product.id) })}><ShoppingBag size={14} />Reponer</button>
+                    <button type="button" disabled={product.stock <= 0} onClick={() => openSale(product)}><ShoppingCart size={14} />Vender</button>
                     <button type="button" className="danger" aria-label="Enviar a la papelera" onClick={() => { if (window.confirm(`¿Enviar «${product.name}» a la papelera? Deja de verse en la tienda; lo puedes restaurar durante 30 días.`)) withBusy(() => deleteProduct({ data: product.id })) }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -726,7 +761,11 @@ export function AdminPanel() {
 
         {tab === 'pedidos' && (
           <section>
-            <h2>Pedidos</h2>
+            <div className="admin-section-head">
+              <h2>Pedidos</h2>
+              <button className="primary-button" onClick={() => openSale()}><ShoppingCart size={16} />Registrar venta por fuera</button>
+            </div>
+            <p className="admin-hint">¿Vendiste algo en persona o por WhatsApp? Regístralo aquí con «Registrar venta por fuera»: se descuenta del stock y se suma a Finanzas, sin tener que hacer la compra en la tienda.</p>
             <label className="search-field admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por número, cliente o teléfono..." /></label>
             <div className="admin-table">
               {filteredOrders.map((order) => <div className="admin-order" key={order.id}>
@@ -997,6 +1036,59 @@ export function AdminPanel() {
           )}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
+        </form>
+      </div></div>}
+
+      {saleDraft && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setSaleDraft(null)}><X /></button>
+        <h2>Registrar venta por fuera</h2>
+        <p>Para lo que vendiste en persona o por WhatsApp. Se descuenta del stock y cuenta en Finanzas igual que un pedido de la tienda. El precio lo pones tú (puede ser un precio especial).</p>
+        <form className="product-form" onSubmit={handleSaveSale}>
+          {saleDraft.lines.map((line, index) => {
+            const product = data.products.find((item) => String(item.id) === line.productId)
+            const options = product ? parseOptions(product.options) : []
+            const lineTotal = Math.round(Number(line.quantity || 0) * Number(line.price || 0) * 100)
+            return <div className="sale-line" key={index}>
+              <div className="sale-line-head">
+                <strong>Producto {saleDraft.lines.length > 1 ? index + 1 : ''}</strong>
+                {saleDraft.lines.length > 1 && <button type="button" className="variant-remove-button" onClick={() => setSaleDraft((current) => current && { ...current, lines: current.lines.filter((_, i) => i !== index) })}>Quitar</button>}
+              </div>
+              <select required value={line.productId} onChange={(event) => {
+                const next = data.products.find((item) => String(item.id) === event.target.value)
+                updateSaleLine(index, { productId: event.target.value, option: next ? (parseOptions(next.options)[0] ?? '') : '', price: next ? String(next.price / 100) : line.price })
+              }}>
+                <option value="" disabled>Selecciona un producto</option>
+                {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((item) => <option key={item.id} value={item.id} disabled={item.stock <= 0}>{item.name} (quedan {item.stock})</option>)}
+              </select>
+              {options.length > 0 && (
+                <select value={line.option} onChange={(event) => updateSaleLine(index, { option: event.target.value })}>
+                  {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              )}
+              <div className="form-row">
+                <label>Cantidad<input required type="number" inputMode="numeric" min={1} max={product?.stock} value={line.quantity} onChange={(event) => updateSaleLine(index, { quantity: event.target.value })} /></label>
+                <label>Precio por unidad (RD$)<input required type="number" inputMode="decimal" min={0} step="0.01" value={line.price} onChange={(event) => updateSaleLine(index, { price: event.target.value })} /></label>
+              </div>
+              {product && lineTotal > 0 && <p className="sale-line-total">{line.quantity} × {money(Math.round(Number(line.price || 0) * 100))} = <strong>{money(lineTotal)}</strong>{product.price > 0 && Math.round(Number(line.price || 0) * 100) < product.price && <span> · precio de tienda {money(product.price)}</span>}</p>}
+            </div>
+          })}
+          <button type="button" className="ghost-button sale-add-line" onClick={() => setSaleDraft((current) => current && { ...current, lines: [...current.lines, emptySaleLine()] })}><Plus size={14} />Agregar otro producto</button>
+          <div className="form-row">
+            <label>Cliente (opcional)<input value={saleDraft.customerName} onChange={(event) => setSaleDraft((current) => current && { ...current, customerName: event.target.value })} placeholder="Ej. Juan Pérez" /></label>
+            <label>Teléfono (opcional)<input type="tel" value={saleDraft.phone} onChange={(event) => setSaleDraft((current) => current && { ...current, phone: event.target.value })} /></label>
+          </div>
+          <div className="form-row">
+            <label>¿Ya te pagaron?
+              <select value={saleDraft.paymentStatus} onChange={(event) => setSaleDraft((current) => current && { ...current, paymentStatus: event.target.value })}>
+                <option value="Pagado">Sí, pagado</option>
+                <option value="Pendiente">No, queda pendiente</option>
+              </select>
+            </label>
+            <label>Nota (opcional)<input value={saleDraft.notes} onChange={(event) => setSaleDraft((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. venta al por mayor" /></label>
+          </div>
+          <p className="order-edit-total">Total de la venta: <strong>{money(saleDraft.lines.reduce((sum, line) => sum + Math.round(Number(line.quantity || 0) * Number(line.price || 0) * 100), 0))}</strong></p>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button full" disabled={busy}>{busy ? 'Registrando…' : 'Registrar venta'}</button>
         </form>
       </div></div>}
 

@@ -192,6 +192,37 @@ function BrandMark({ className = '' }: { className?: string }) {
 }
 
 
+/** Número de cantidad que se puede ESCRIBIR (además de los botones − y +):
+ * para pedidos grandes, como 256 protectores, en vez de tocar + 256 veces.
+ * Mientras se escribe se permite dejarlo vacío; al salir del campo vuelve
+ * al último número válido. Nunca pasa del stock disponible. */
+function QtyInput({ value, max, onChange, className = '' }: { value: number; max: number; onChange: (next: number) => void; className?: string }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input
+      className={className}
+      type="number"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      min={1}
+      max={Math.max(1, max)}
+      aria-label="Cantidad"
+      value={draft ?? String(value)}
+      onFocus={(event) => event.target.select()}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => {
+        const limit = Math.max(1, max)
+        const next = Math.floor(Number(event.target.value))
+        // Si escriben más de lo que hay en stock, se queda en el máximo y se ve
+        // de una vez (no deja creer que se pidieron 250 si solo hay 200).
+        setDraft(Number.isFinite(next) && next > limit ? String(limit) : event.target.value)
+        if (Number.isFinite(next) && next >= 1) onChange(Math.min(next, limit))
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  )
+}
+
 type AddHandler = (product: Product, option: string | undefined, quantity: number) => boolean
 
 function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddHandler; onOpen: (product: Product, option: string, index: number) => void }) {
@@ -410,7 +441,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
                 <span>Cantidad</span>
                 <div className="pd-stepper">
                   <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} disabled={quantity <= 1} aria-label="Menos"><Minus size={15} /></button>
-                  <output aria-live="polite">{quantity}</output>
+                  <QtyInput value={quantity} max={product.stock} onChange={setQuantity} />
                   <button type="button" onClick={() => setQuantity((q) => Math.min(Math.max(1, product.stock), q + 1))} disabled={soldOut || quantity >= product.stock} aria-label="Más"><Plus size={15} /></button>
                 </div>
               </div>
@@ -1017,7 +1048,7 @@ export function Storefront({ data }: Props) {
       <div className="cart-lines">
         {cart.map((line) => <div className="cart-line" key={lineKey(line)}>
           <img src={line.image} alt="" />
-          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(lineKey(line), -1)} aria-label="Menos"><Minus size={14} /></button><span>{line.quantity}</span><button onClick={() => changeQuantity(lineKey(line), 1)} aria-label="Más"><Plus size={14} /></button></div></div>
+          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(lineKey(line), -1)} aria-label="Menos"><Minus size={14} /></button><QtyInput className="cart-qty-input" value={line.quantity} max={(products.find((item) => item.id === line.productId)?.stock ?? line.quantity) - cart.filter((other) => other.productId === line.productId && other !== line).reduce((sum, other) => sum + other.quantity, 0)} onChange={(next) => changeQuantity(lineKey(line), next - line.quantity)} /><button onClick={() => changeQuantity(lineKey(line), 1)} aria-label="Más"><Plus size={14} /></button></div></div>
           <button className="remove" aria-label="Quitar" onClick={() => setCart((current) => current.filter((item) => lineKey(item) !== lineKey(line)))}><Trash2 size={16} /></button>
         </div>)}
         {!cart.length && <div className="empty-cart"><ShoppingCart /><h3>Tu carrito está vacío</h3><p>Explora el catálogo y agrega tus productos favoritos.</p></div>}

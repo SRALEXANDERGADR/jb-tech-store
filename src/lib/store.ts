@@ -541,6 +541,48 @@ export const purgeOrder = createServerFn({ method: 'POST' }).inputValidator((id:
   return true
 })
 
+// Venta hecha POR FUERA de la web (en persona, por WhatsApp, etc.). Se
+// registra como un pedido normal —ya entregado y pagado— para que salga en
+// Pedidos, descuente el stock (FIFO) y cuente solo en Finanzas. El precio
+// por unidad lo pone quien registra la venta (puede ser más bajo que el de
+// la tienda, ej. una venta al por mayor).
+export const recordManualSale = createServerFn({ method: 'POST' })
+  .inputValidator((data: { customerName: string; phone: string; notes: string; paymentStatus: string; items: Array<{ productId: number; option: string; quantity: number; price: number }> }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    if (!Array.isArray(data.items) || !data.items.length) throw new Error('Agrega al menos un producto.')
+    const lines = data.items.map((item) => ({ productId: Number(item.productId), option: String(item.option || '').trim(), quantity: Math.round(Number(item.quantity)), price: Math.max(0, Math.round(Number(item.price))) }))
+    for (const line of lines) {
+      if (!line.productId) throw new Error('Elige el producto de cada línea.')
+      if (!Number.isFinite(line.quantity) || line.quantity < 1) throw new Error('La cantidad debe ser 1 o más.')
+      if (!Number.isFinite(line.price)) throw new Error('El precio no es válido.')
+    }
+    const needed = unitsByProduct(lines.map((line) => ({ id: line.productId, quantity: line.quantity })))
+    const rows = await db.select().from(products).where(inArray(products.id, [...needed.keys()]))
+    for (const [productId, quantity] of needed) {
+      const row = rows.find((item) => item.id === productId)
+      if (!row) throw new Error('Uno de los productos ya no existe.')
+      if (row.stock < quantity) throw new Error(`No hay stock suficiente de ${row.name} (quedan ${row.stock}). Si tienes más unidades, regístralas primero con «Registrar compra».`)
+    }
+    const items: Array<{ id: number; name: string; price: number; quantity: number; cost: number }> = []
+    for (const line of lines) {
+      const row = rows.find((item) => item.id === line.productId)!
+      const cost = await takeStock(row.id, line.quantity, row.name)
+      items.push({ id: row.id, name: line.option ? `${row.name} — ${line.option}` : row.name, price: line.price, quantity: line.quantity, cost: Math.round(cost / line.quantity) })
+    }
+    const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    const customerName = String(data.customerName || '').trim().slice(0, 80) || 'Venta en tienda'
+    const phone = String(data.phone || '').trim().slice(0, 30)
+    const customer = phone ? await findOrCreateCustomer({ name: customerName, phone }) : null
+    const orderNumber = makeFolio('VTA')
+    await db.insert(orders).values({
+      orderNumber, customerId: customer?.id ?? null, customerName, email: '', phone, address: '', items, total,
+      status: 'Entregado', paymentStatus: PAYMENT_STATUSES.includes(data.paymentStatus) ? data.paymentStatus : 'Pagado',
+      notes: ['Venta por fuera', String(data.notes || '').trim()].filter(Boolean).join(' · ').slice(0, 500),
+    })
+    return { orderNumber, total }
+  })
+
 // ───────────────────────────────────────────────────────────────────────
 // ADMIN — contenido del sitio
 // ───────────────────────────────────────────────────────────────────────

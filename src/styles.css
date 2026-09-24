@@ -384,7 +384,7 @@ main { max-width: var(--max-width); width: 100%; margin: 0 auto; padding: 0 16px
 .pd-stepper { display: flex; align-items: center; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; overflow: hidden; }
 .pd-stepper button { width: 40px; height: 38px; padding: 0; display: flex; align-items: center; justify-content: center; background: none; border: none; color: var(--ink); cursor: pointer; }
 .pd-stepper button:disabled { opacity: .3; cursor: not-allowed; }
-.pd-stepper output { min-width: 42px; text-align: center; font-weight: 700; color: var(--ink); font-size: 15px; border-left: 1px solid rgba(255,255,255,.1); border-right: 1px solid rgba(255,255,255,.1); line-height: 38px; font-variant-numeric: tabular-nums; }
+.pd-stepper input, .pd-stepper output { min-width: 42px; text-align: center; font-weight: 700; color: var(--ink); font-size: 15px; border-left: 1px solid rgba(255,255,255,.1); border-right: 1px solid rgba(255,255,255,.1); line-height: 38px; font-variant-numeric: tabular-nums; }
 
 .pd-trust { list-style: none; margin: 0; padding: 12px 14px; display: flex; flex-direction: column; gap: 11px; background: var(--navy-800); border: 1px solid rgba(255,255,255,.06); border-radius: 12px; }
 .pd-trust li { display: flex; align-items: flex-start; gap: 10px; }
@@ -431,6 +431,11 @@ main { max-width: var(--max-width); width: 100%; margin: 0 auto; padding: 0 16px
 .toast-text span { font-size: 12px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .toast button { flex: none; border: none; cursor: pointer; background: #fff; color: #0f172a; font-size: 12.5px; font-weight: 800; padding: 9px 12px; border-radius: 10px; }
 
+.pd-stepper input { height: 38px; width: 64px; background: none; border-top: none; border-bottom: none; padding: 0; outline: none; -moz-appearance: textfield; appearance: textfield; }
+.pd-stepper input:focus { background: rgba(96,165,250,.12); }
+.pd-stepper input::-webkit-outer-spin-button, .pd-stepper input::-webkit-inner-spin-button, .cart-qty-input::-webkit-outer-spin-button, .cart-qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.cart-qty-input { width: 52px; height: 28px; text-align: center; font-weight: 700; font-size: 13px; color: var(--ink); background: var(--navy-900); border: 1px solid rgba(255,255,255,.15); border-radius: 8px; outline: none; -moz-appearance: textfield; appearance: textfield; font-variant-numeric: tabular-nums; }
+.cart-qty-input:focus { border-color: var(--blue-500); }
 .scroll-locked, .scroll-locked body { overflow: hidden; }
 .overlay.cart-overlay { z-index: 90; }
 .cart-continue { width: 100%; margin-top: 8px; }
@@ -731,6 +736,17 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 }
 .prod-row-actions button:hover { background: rgba(255,255,255,0.12); }
 .prod-row-actions button.danger { flex: 0 0 40px; color: #fca5a5; }
+.admin-notice { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; padding: 10px 12px; border-radius: var(--radius-sm); background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.35); color: #86efac; font-size: 13px; font-weight: 600; }
+.admin-notice svg { flex: none; margin-top: 1px; }
+.admin-notice button { margin-left: auto; background: none; border: none; color: inherit; cursor: pointer; padding: 0; }
+.sale-line { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--radius-sm); background: var(--navy-900); border: 1px solid rgba(255,255,255,0.08); }
+.sale-line-head { display: flex; align-items: center; justify-content: space-between; }
+.sale-line-head strong { color: var(--ink); font-size: 13px; }
+.sale-add-line { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.sale-line-total { font-size: 12.5px; color: var(--ink-dim); }
+.sale-line-total strong { color: var(--white); }
+.sale-line-total span { color: var(--ink-faint); }
+.prod-row-actions button:disabled { opacity: .4; cursor: not-allowed; }
 .link-button { background: none; border: none; padding: 0; color: #fff; font-weight: 800; text-decoration: underline; cursor: pointer; font-size: inherit; }
 @media (min-width: 900px) {
   .prod-row { grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; }
