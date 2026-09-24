@@ -88,6 +88,14 @@ type ProductDraft = { id?: number; name: string; category: string; description: 
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
 type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
+type CatalogFilter = 'todos' | 'agotados' | 'bajo' | 'sincosto' | 'ocultos'
+const CATALOG_FILTERS: Array<{ id: CatalogFilter; label: string }> = [
+  { id: 'todos', label: 'Todos' },
+  { id: 'agotados', label: 'Agotados' },
+  { id: 'bajo', label: 'Stock bajo' },
+  { id: 'sincosto', label: 'Sin costo' },
+  { id: 'ocultos', label: 'Ocultos' },
+]
 type Tab = 'resumen' | 'finanzas' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
 
 function emptyPurchaseDraft(): PurchaseDraft {
@@ -226,6 +234,8 @@ export function AdminPanel() {
   const [purchaseQuery, setPurchaseQuery] = useState('')
   const [purchaseLimit, setPurchaseLimit] = useState(15)
   const [expenseLimit, setExpenseLimit] = useState(15)
+  const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('todos')
+  const [catalogCategory, setCatalogCategory] = useState('')
 
   async function refresh() {
     const adminData = await getAdminData()
@@ -487,6 +497,14 @@ export function AdminPanel() {
   const remainingByProduct = new Map<number, number>()
   for (const purchase of data.purchases) remainingByProduct.set(purchase.productId, (remainingByProduct.get(purchase.productId) ?? 0) + (purchase.remainingQuantity ?? 0))
   const uncostedProducts = data.products.filter((product) => product.stock > (remainingByProduct.get(product.id) ?? 0) && product.cost === 0)
+  const uncostedIds = new Set(uncostedProducts.map((product) => product.id))
+  const matchesCatalogFilter = (product: Product, filter: CatalogFilter) =>
+    filter === 'todos' ? true
+      : filter === 'agotados' ? product.stock === 0
+      : filter === 'bajo' ? product.stock > 0 && product.stock <= 3
+      : filter === 'sincosto' ? uncostedIds.has(product.id)
+      : !product.active
+  const catalogProducts = filteredProducts.filter((product) => matchesCatalogFilter(product, catalogFilter) && (!catalogCategory || product.category === catalogCategory))
   const trashTotal = data.trash.products.length + data.trash.orders.length + data.trash.customers.length + data.trash.images.length
 
   // Finanzas: todo se calcula a partir de pedidos pagados + compras +
@@ -527,7 +545,7 @@ export function AdminPanel() {
         <span className="drawer-kicker">JB TECH STORE</span>
         <h1>Panel admin</h1>
         <nav>
-          {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setQuery('') }}><Icon size={17} />{label}</button>)}
+          {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setQuery(''); setCatalogFilter('todos'); setCatalogCategory('') }}><Icon size={17} />{label}</button>)}
         </nav>
         <div className="admin-sidebar-footer">
           <Link to="/"><ChevronLeft size={15} />Ver la tienda</Link>
@@ -616,7 +634,7 @@ export function AdminPanel() {
             <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" (y que no estén cancelados). Un pedido sin pagar todavía no mueve el capital: aparece en "Por cobrar".</p>
             {uncostedProducts.length > 0 && (
               <p className="form-error">
-                {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades en stock sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en Catálogo y regístralas con «Registrar compra».
+                {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades en stock sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en Catálogo y regístralas con «Registrar compra». <button type="button" className="link-button" onClick={() => { setTab('catalogo'); setQuery(''); setCatalogFilter('sincosto') }}>Ver cuáles son</button>
               </p>
             )}
 
@@ -663,17 +681,45 @@ export function AdminPanel() {
               <button className="primary-button" onClick={() => setEditing(emptyDraft())}><Plus size={16} />Nuevo producto</button>
             </div>
             <label className="search-field admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar producto..." /></label>
+            <div className="cat-filters">
+              {CATALOG_FILTERS.map((filter) => {
+                const count = data.products.filter((product) => matchesCatalogFilter(product, filter.id)).length
+                if (filter.id !== 'todos' && count === 0) return null
+                return <button type="button" key={filter.id} className={`${catalogFilter === filter.id ? 'active' : ''} ${filter.id === 'sincosto' ? 'warn' : ''}`} onClick={() => setCatalogFilter(filter.id)}>{filter.label} <b>{count}</b></button>
+              })}
+              <select value={catalogCategory} onChange={(event) => setCatalogCategory(event.target.value)} aria-label="Categoría">
+                <option value="">Todas las categorías</option>
+                {CATEGORIES.filter((category) => data.products.some((product) => product.category === category)).map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+            </div>
             <div className="admin-table">
-              {filteredProducts.map((product) => <div className="admin-row admin-row-product" key={product.id}>
-                <img src={product.image || '/logo.png'} alt="" />
-                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo actual {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}{product.variantImages?.length > 0 && ` · ${product.variantImages.length} con foto propia`}</span></div>
-                <div className="admin-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<strong>{money(product.price)}</strong></div>
-                <div className="admin-row-actions">
-                  <button onClick={() => setEditing(toDraft(product))}><Pencil size={15} /></button>
-                  <button onClick={() => { if (window.confirm(`¿Enviar «${product.name}» a la papelera? Deja de verse en la tienda; lo puedes restaurar durante 30 días.`)) withBusy(() => deleteProduct({ data: product.id })) }}><Trash2 size={15} /></button>
+              {catalogProducts.map((product) => {
+                const options = parseOptions(product.options)
+                const margin = product.price > 0 && product.cost > 0 ? Math.round(((product.price - product.cost) / product.price) * 100) : null
+                const noCost = uncostedIds.has(product.id)
+                return <div className={`prod-row ${!product.active ? 'is-hidden' : ''}`} key={product.id}>
+                  <img src={product.image || '/logo.png'} alt="" loading="lazy" />
+                  <div className="prod-row-main">
+                    <div className="prod-row-top">
+                      <strong>{product.name}</strong>
+                      <div className="prod-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<b>{money(product.price)}</b></div>
+                    </div>
+                    <span className="prod-row-cat">{product.category}{options.length > 0 ? ` · ${options.length} ${options.length === 1 ? 'opción' : 'opciones'}` : ''}{product.variantImages?.length > 0 ? ` · ${product.variantImages.length} con foto` : ''}</span>
+                    <div className="prod-row-pills">
+                      <span className={`pill ${product.stock === 0 ? 'pill-bad' : product.stock <= 3 ? 'pill-warn' : 'pill-ok'}`}>{product.stock === 0 ? 'Agotado' : `${product.stock} en stock`}</span>
+                      {noCost ? <span className="pill pill-bad">Sin costo registrado</span> : <span className="pill">Costo {money(product.cost)}</span>}
+                      {margin !== null && <span className={`pill ${margin < 15 ? 'pill-warn' : ''}`}>Margen {margin}%</span>}
+                      {!product.active && <span className="pill">Oculto</span>}
+                    </div>
+                  </div>
+                  <div className="prod-row-actions">
+                    <button type="button" onClick={() => setEditing(toDraft(product))}><Pencil size={14} />Editar</button>
+                    <button type="button" onClick={() => setEditingPurchase({ ...emptyPurchaseDraft(), productId: String(product.id) })}><ShoppingBag size={14} />Reponer</button>
+                    <button type="button" className="danger" aria-label="Enviar a la papelera" onClick={() => { if (window.confirm(`¿Enviar «${product.name}» a la papelera? Deja de verse en la tienda; lo puedes restaurar durante 30 días.`)) withBusy(() => deleteProduct({ data: product.id })) }}><Trash2 size={14} /></button>
+                  </div>
                 </div>
-              </div>)}
-              {!filteredProducts.length && <p className="admin-empty">No hay productos que coincidan.</p>}
+              })}
+              {!catalogProducts.length && <p className="admin-empty">No hay productos que coincidan.</p>}
             </div>
           </section>
         )}

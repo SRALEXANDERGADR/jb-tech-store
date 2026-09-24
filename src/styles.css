@@ -691,6 +691,50 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .admin-row span { display: block; color: var(--ink-faint); font-size: 12.5px; margin-top: 2px; }
 .admin-row-product img { width: 46px; height: 46px; border-radius: var(--radius-sm); object-fit: cover; background: var(--navy-700); }
 .admin-row-price { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+/* ─── Catálogo del admin: tarjetas legibles en el teléfono ─── */
+.cat-filters { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 12px; margin-top: -4px; scrollbar-width: none; }
+.cat-filters::-webkit-scrollbar { display: none; }
+.cat-filters button {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  background: var(--navy-800); border: 1px solid rgba(255,255,255,0.1); color: var(--ink-dim); font-size: 12.5px; font-weight: 700; white-space: nowrap;
+}
+.cat-filters button b { font-size: 11px; font-weight: 800; background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 999px; }
+.cat-filters button.active { background: var(--blue-600); border-color: var(--blue-600); color: #fff; }
+.cat-filters button.warn:not(.active) { color: #fca5a5; border-color: rgba(239,68,68,0.35); }
+.cat-filters select { flex: none; background: var(--navy-800); border: 1px solid rgba(255,255,255,0.1); color: var(--ink-dim); border-radius: 999px; padding: 7px 12px; font-size: 12.5px; font-weight: 700; }
+.prod-row {
+  content-visibility: auto; contain-intrinsic-size: 0 150px;
+  display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px 12px; align-items: start;
+  background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 12px;
+}
+.prod-row.is-hidden { opacity: .6; }
+.prod-row > img { width: 56px; height: 56px; border-radius: 10px; object-fit: contain; background: var(--stage); padding: 2px; }
+.prod-row-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.prod-row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.prod-row-top strong { color: var(--ink); font-size: 14px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.prod-row-price { display: flex; flex-direction: column; align-items: flex-end; flex: none; line-height: 1.2; }
+.prod-row-price b { color: var(--white); font-size: 15px; font-weight: 800; white-space: nowrap; }
+.prod-row-price s { color: var(--ink-faint); font-size: 11px; white-space: nowrap; }
+.prod-row-cat { color: var(--ink-faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prod-row-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.pill { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; line-height: 1; padding: 5px 7px; border-radius: 6px; background: rgba(255,255,255,0.07); color: var(--ink-dim); white-space: nowrap; }
+.pill-ok { background: rgba(34,197,94,0.13); color: #86efac; }
+.pill-warn { background: rgba(245,158,11,0.15); color: #fcd34d; }
+.pill-bad { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.prod-row-actions { grid-column: 1 / -1; display: flex; gap: 6px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); }
+.prod-row-actions button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  background: rgba(255,255,255,0.06); border: none; color: var(--ink); font-size: 12.5px; font-weight: 700;
+}
+.prod-row-actions button:hover { background: rgba(255,255,255,0.12); }
+.prod-row-actions button.danger { flex: 0 0 40px; color: #fca5a5; }
+.link-button { background: none; border: none; padding: 0; color: #fff; font-weight: 800; text-decoration: underline; cursor: pointer; font-size: inherit; }
+@media (min-width: 900px) {
+  .prod-row { grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; }
+  .prod-row-actions { grid-column: auto; border-top: none; padding-top: 0; }
+  .prod-row-actions button { flex: none; }
+}
+
 .admin-row-price s { color: var(--ink-faint); font-size: 11.5px; }
 .admin-row-price strong { color: var(--white); }
 .admin-row-actions { display: flex; gap: 6px; }
