@@ -37,6 +37,23 @@ function variantFor(product: Product, option: string) {
   return option ? (product.variantImages || []).find((entry) => entry.option === option) : undefined
 }
 
+/** Fila de miniaturas para elegir la opción visualmente (como en Temu),
+ * además del selector de texto. Solo se muestra si el producto tiene AL
+ * MENOS una foto propia por opción — si nunca se subió ninguna, todas las
+ * miniaturas serían la misma foto genérica y no aportaría nada. */
+function VariantSwatches({ product, options, selected, onSelect }: { product: Product; options: string[]; selected: string; onSelect: (option: string) => void }) {
+  if (!product.variantImages || product.variantImages.length === 0) return null
+  return (
+    <div className="variant-swatches">
+      {options.map((option) => (
+        <button type="button" key={option} className={`variant-swatch ${option === selected ? 'active' : ''}`} title={option} onClick={(event) => { event.stopPropagation(); onSelect(option) }}>
+          <img src={variantFor(product, option)?.image || product.image} alt={option} loading="lazy" />
+        </button>
+      ))}
+    </div>
+  )
+}
+
 const CATEGORY_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   'Teléfonos': Smartphone,
   'Laptops': Laptop,
@@ -108,25 +125,15 @@ function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (pro
         <p className="product-card-category"><Icon size={13} />{product.category}</p>
         <h3>{product.name}</h3>
         {(variant?.description || product.description) && <p className="product-card-description">{variant?.description || product.description}</p>}
-        {options.length > 0 && (product.variantImages || []).length > 0 ? (
-          <div className="variant-swatches">
-            {options.map((option) => {
-              const swatch = variantFor(product, option)
-              return (
-                <button type="button" key={option} className={`variant-swatch ${selected === option ? 'active' : ''}`} onClick={() => setSelected(option)} title={option}>
-                  <img src={swatch?.image || product.image} alt={option} />
-                </button>
-              )
-            })}
-          </div>
-        ) : options.length > 0 ? (
+        {options.length > 0 && (
           <div className="product-card-options">
             <label>Elige una opción</label>
             <select value={selected} onChange={(event) => setSelected(event.target.value)}>
               {options.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
+            <VariantSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
           </div>
-        ) : null}
+        )}
         <div className="product-card-price">
           {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
           <strong>{money(product.price)}</strong>
@@ -161,26 +168,15 @@ function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd
           <p className="product-card-category"><Icon size={13} />{product.category}</p>
           <h2>{product.name}</h2>
           {(variant?.description || product.description) && <p className="product-quickview-description">{variant?.description || product.description}</p>}
-          {options.length > 0 && (product.variantImages || []).length > 0 ? (
-            <div className="variant-swatches variant-swatches-lg">
-              {options.map((option) => {
-                const swatch = variantFor(product, option)
-                return (
-                  <button type="button" key={option} className={`variant-swatch ${selected === option ? 'active' : ''}`} onClick={() => setSelected(option)} title={option}>
-                    <img src={swatch?.image || product.image} alt={option} />
-                  </button>
-                )
-              })}
-              <span className="variant-swatches-label">{selected}</span>
-            </div>
-          ) : options.length > 0 ? (
+          {options.length > 0 && (
             <div className="product-card-options">
               <label>Elige una opción</label>
               <select value={selected} onChange={(event) => setSelected(event.target.value)}>
                 {options.map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
+              <VariantSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
             </div>
-          ) : null}
+          )}
           <div className="product-card-price">
             {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
             <strong>{money(product.price)}</strong>
@@ -457,12 +453,11 @@ export function Storefront({ data }: Props) {
       if (existing) return current.map((line) => line === existing ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
       return [...current, { productId: product.id, name, price: product.price, quantity: 1, image }]
     })
-    // Solo un aviso flotante y se actualiza el número del carrito — ya NO
-    // se abre el panel del carrito solo, para no interrumpir al cliente
-    // que sigue viendo el catálogo (se puede abrir a mano con el ícono).
-    setToast(`${name} — agregado al carrito`)
+    // En vez de abrir el carrito de golpe (lo que interrumpía seguir viendo
+    // la tienda), se muestra un aviso chiquito que desaparece solo.
+    setToast(`${name} agregado ✓`)
     if (toastTimer.current) clearTimeout(toastTimer.current)
-    toastTimer.current = setTimeout(() => setToast(''), 2200)
+    toastTimer.current = setTimeout(() => setToast(''), 1800)
   }
 
   const changeQuantity = (id: number, delta: number) => setCart((current) => current.flatMap((line) => {
@@ -691,6 +686,8 @@ export function Storefront({ data }: Props) {
       <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={20} /><span>WhatsApp</span></a>
     </nav>
 
+    <div className={`toast ${toast ? 'visible' : ''}`}>{toast}</div>
+
     <div className={`overlay ${cartOpen ? 'visible' : ''}`} onClick={() => setCartOpen(false)} />
     <aside className={`cart-drawer ${cartOpen ? 'open' : ''}`}>
       <div className="drawer-head"><div><span className="drawer-kicker">CARRITO · {cartCount} {cartCount === 1 ? 'ARTÍCULO' : 'ARTÍCULOS'}</span><h2>{copy.cartTitle}</h2></div><button className="icon-button" onClick={() => setCartOpen(false)}><X /></button></div>
@@ -743,8 +740,6 @@ export function Storefront({ data }: Props) {
     </div></div>}
 
     {quickView && <ProductQuickView product={quickView} onAdd={addToCart} onClose={() => setQuickView(null)} />}
-
-    {toast && <div className="toast-notice"><Check size={15} />{toast}</div>}
 
     <div className="receipt-capture" ref={receiptRef}>
       {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={whatsappDigits} />}
