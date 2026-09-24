@@ -4,7 +4,7 @@ import { Link } from '@tanstack/react-router'
 import {
   ArrowLeft, ArrowRight, BatteryCharging, Check, ChevronDown, ChevronLeft, ChevronRight, Facebook, Flame, Gamepad2,
   Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, MessageCircle, Minus, Package, Phone, Plus,
-  Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Truck, Watch, X,
+  Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Store, Trash2, Truck, Watch, X,
 } from 'lucide-react'
 import { createOrder, type CartLine } from '@/lib/store'
 import { ShareButton } from './ShareButton'
@@ -834,27 +834,18 @@ export function Storefront({ data }: Props) {
     </aside>
 
     <main>
-      <section className="hero" id="inicio">
-        <p className="eyebrow reveal"><Sparkles size={14} />{copy.eyebrow}</p>
-        <h1 className="reveal delay-1">{copy.heroTitle}</h1>
-        <p className="hero-lede reveal delay-1">{copy.heroDescription}</p>
-        <div className="hero-actions reveal delay-1">
-          <a className="primary-button" href="#tienda">{copy.heroCta}<ArrowRight size={16} /></a>
-          <a className="whatsapp-button" href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={17} />WhatsApp</a>
-        </div>
-        <p className="hero-badge reveal delay-1"><Send size={13} />{copy.heroBadge}</p>
-      </section>
-
-      <section className="category-grid-section" id="categorias">
-        <div className="section-heading reveal"><span>Explora</span><h2>Compra por categoría</h2></div>
-        <div className="category-grid">
-          {realCategories.map((item) => {
-            const Icon = categoryIcon(item)
+      {/* Arriba del todo: una sola fila de categorías que se desliza de
+          lado (como en Temu). Tocar una filtra el catálogo y baja hasta él. */}
+      <section className="cat-strip" id="inicio" aria-label="Categorías">
+        <h1 className="visually-hidden">{copy.brandName} — {copy.heroTitle}</h1>
+        <div className="cat-strip-track">
+          {['Todos', ...realCategories].map((item) => {
+            const Icon = item === 'Todos' ? LayoutGrid : categoryIcon(item)
             return (
-              <a key={item} href="#tienda" className="category-tile reveal" onClick={() => setCategory(item)}>
-                <span className="category-tile-icon"><Icon size={24} /></span>
-                <span>{item}</span>
-              </a>
+              <button type="button" key={item} className={`cat-chip ${category === item ? 'active' : ''}`} onClick={() => { setCategory(item); document.getElementById('tienda')?.scrollIntoView({ behavior: 'smooth' }) }}>
+                <span className="cat-chip-icon"><Icon size={22} /></span>
+                <span className="cat-chip-label">{item}</span>
+              </button>
             )
           })}
         </div>
