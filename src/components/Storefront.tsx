@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ComponentType, FormEvent } from 'react'
+import type { ComponentType, FormEvent, MouseEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  ArrowRight, BatteryCharging, Check, ChevronDown, ChevronRight, Eye, Facebook, Flame, Gamepad2,
-  Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, Minus, Package, Phone, Plus,
-  Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Watch, X,
+  ArrowLeft, ArrowRight, BatteryCharging, Check, ChevronDown, ChevronLeft, ChevronRight, Facebook, Flame, Gamepad2,
+  Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, MessageCircle, Minus, Package, Phone, Plus,
+  Search, Send, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Sparkles, Store, Trash2, Truck, Watch, X,
 } from 'lucide-react'
 import { createOrder, type CartLine } from '@/lib/store'
 import { ShareButton } from './ShareButton'
@@ -31,28 +31,93 @@ const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'curren
 /** Busca la foto/descripción propia de una opción elegida (color, diseño,
  * modelo de iPhone, etc.). Si esa opción no tiene una foto propia subida
  * desde el admin, devuelve undefined y quien llama cae de vuelta a la
- * foto/descripción general del producto — así los productos que nunca
- * usaron esto siguen funcionando exactamente igual que antes. */
+ * foto/descripción general del producto. */
 function variantFor(product: Product, option: string) {
   return option ? (product.variantImages || []).find((entry) => entry.option === option) : undefined
 }
 
-/** Fila de miniaturas para elegir la opción visualmente (como en Temu),
- * además del selector de texto. Solo se muestra si el producto tiene AL
- * MENOS una foto propia por opción — si nunca se subió ninguna, todas las
- * miniaturas serían la misma foto genérica y no aportaría nada. */
-function VariantSwatches({ product, options, selected, onSelect }: { product: Product; options: string[]; selected: string; onSelect: (option: string) => void }) {
-  if (!product.variantImages || product.variantImages.length === 0) return null
+function parseOptions(product: Product) {
+  return product.options.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+type GalleryItem = { image: string; option: string | null }
+
+/** Fotos que se pueden deslizar (como en Temu): primero la foto general
+ * del producto y después la foto propia de cada opción, en el mismo orden
+ * de las opciones y sin repetir la misma foto dos veces. */
+function buildGallery(product: Product, options: string[]): GalleryItem[] {
+  const items: GalleryItem[] = []
+  const seen = new Set<string>()
+  if (product.image) { items.push({ image: product.image, option: null }); seen.add(product.image) }
+  for (const option of options) {
+    const image = variantFor(product, option)?.image
+    if (image && !seen.has(image)) { items.push({ image, option }); seen.add(image) }
+  }
+  if (!items.length) items.push({ image: product.image, option: null })
+  return items
+}
+
+function galleryIndexFor(gallery: GalleryItem[], option: string) {
+  return gallery.findIndex((item) => item.option === option)
+}
+
+function discountPercent(product: Product) {
+  return product.originalPrice > product.price ? Math.round((1 - product.price / product.originalPrice) * 100) : 0
+}
+
+/** Carrusel de fotos con deslizamiento nativo (scroll-snap). El número
+ * "1/5" se actualiza mientras se desliza; el índice "oficial" (el que
+ * cambia la opción elegida) se confirma cuando el dedo se detiene, para
+ * no pelear con el desplazamiento suave cuando se toca una miniatura. */
+function Gallery({ items, index, onIndexChange, alt, className = '', arrows = false, eager = false }: {
+  items: GalleryItem[]; index: number; onIndexChange: (index: number) => void; alt: string; className?: string; arrows?: boolean; eager?: boolean
+}) {
+  const trackRef = useRef<HTMLDivElement>(null)
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [live, setLive] = useState(index)
+
+  useEffect(() => {
+    const track = trackRef.current
+    if (!track || !track.clientWidth) return
+    const target = index * track.clientWidth
+    if (Math.abs(track.scrollLeft - target) > 2) track.scrollTo({ left: target, behavior: 'smooth' })
+    setLive(index)
+  }, [index])
+
+  useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current) }, [])
+
+  const handleScroll = () => {
+    const track = trackRef.current
+    if (!track || !track.clientWidth) return
+    const current = Math.round(track.scrollLeft / track.clientWidth)
+    setLive(current)
+    if (settleTimer.current) clearTimeout(settleTimer.current)
+    settleTimer.current = setTimeout(() => { if (current !== index) onIndexChange(current) }, 140)
+  }
+
+  const go = (delta: number) => (event: MouseEvent) => {
+    event.stopPropagation()
+    onIndexChange(Math.min(items.length - 1, Math.max(0, index + delta)))
+  }
+
   return (
-    <div className="variant-swatches">
-      {options.map((option) => (
-        <button type="button" key={option} className={`variant-swatch ${option === selected ? 'active' : ''}`} title={option} onClick={(event) => { event.stopPropagation(); onSelect(option) }}>
-          <img src={variantFor(product, option)?.image || product.image} alt={option} loading="lazy" />
-        </button>
-      ))}
+    <div className={`gallery ${className}`}>
+      <div className="gallery-track" ref={trackRef} onScroll={handleScroll}>
+        {items.map((item, i) => (
+          <div className="gallery-slide" key={`${item.image}-${i}`}>
+            <img src={item.image} alt={item.option ? `${alt} — ${item.option}` : alt} loading={eager && i === 0 ? 'eager' : 'lazy'} decoding="async" draggable={false} />
+          </div>
+        ))}
+      </div>
+      {items.length > 1 && <span className="gallery-counter">{live + 1}/{items.length}</span>}
+      {arrows && items.length > 1 && <>
+        <button type="button" className="gallery-arrow prev" onClick={go(-1)} disabled={index === 0} aria-label="Foto anterior"><ChevronLeft size={20} /></button>
+        <button type="button" className="gallery-arrow next" onClick={go(1)} disabled={index === items.length - 1} aria-label="Foto siguiente"><ChevronRight size={20} /></button>
+      </>}
     </div>
   )
 }
+
 
 const CATEGORY_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   'Teléfonos': Smartphone,
@@ -102,90 +167,256 @@ function BrandMark({ className = '' }: { className?: string }) {
   )
 }
 
-function DiscountBadge({ price, originalPrice }: { price: number; originalPrice: number }) {
-  if (!originalPrice || originalPrice <= price) return null
-  const percent = Math.round((1 - price / originalPrice) * 100)
-  return <span className="discount-badge">-{percent}%</span>
-}
 
-function ProductCard({ product, onAdd, onView }: { product: Product; onAdd: (product: Product, option?: string) => void; onView: (product: Product) => void }) {
-  const Icon = categoryIcon(product.category)
-  const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
+type AddHandler = (product: Product, option: string | undefined, quantity: number) => boolean
+
+function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddHandler; onOpen: (product: Product, option: string, index: number) => void }) {
+  const options = useMemo(() => parseOptions(product), [product])
+  const gallery = useMemo(() => buildGallery(product, options), [product, options])
   const [selected, setSelected] = useState(options[0] ?? '')
-  const variant = variantFor(product, selected)
+  const [index, setIndex] = useState(0)
+  const [added, setAdded] = useState(false)
+  const percent = discountPercent(product)
+  const soldOut = product.stock <= 0
+  const swatchOptions = options.filter((option) => variantFor(product, option)?.image)
+  const hasSwatches = swatchOptions.length > 0
+  const textOnlyOptions = options.length > 0 && !hasSwatches
+
+  const handleIndex = (next: number) => {
+    setIndex(next)
+    const option = gallery[next]?.option
+    if (option) setSelected(option)
+  }
+  const pickOption = (option: string) => {
+    setSelected(option)
+    const galleryIndex = galleryIndexFor(gallery, option)
+    if (galleryIndex >= 0) setIndex(galleryIndex)
+  }
+  const handleAdd = (event: MouseEvent) => {
+    event.stopPropagation()
+    // Si las opciones son solo texto (ej. modelos de iPhone) no hay forma
+    // de elegir desde la tarjeta: se abre la ficha para escoger primero.
+    if (textOnlyOptions) { onOpen(product, selected, index); return }
+    if (onAdd(product, selected || undefined, 1)) {
+      setAdded(true)
+      setTimeout(() => setAdded(false), 1100)
+    }
+  }
+
   return (
-    <article className="product-card reveal">
-      <div className="product-card-media" onClick={() => onView(product)}>
-        <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
-        {product.stock === 0 && <span className="stock-badge">Agotado</span>}
-        <img src={variant?.image || product.image} alt={product.name} loading="lazy" />
-        <button type="button" className="product-card-view-button" onClick={(event) => { event.stopPropagation(); onView(product) }} aria-label={`Ver detalles de ${product.name}`}><Eye size={15} /></button>
+    <article className={`product-card reveal ${soldOut ? 'is-soldout' : ''}`} onClick={() => onOpen(product, selected, index)}>
+      <div className="product-card-media">
+        <Gallery items={gallery} index={index} onIndexChange={handleIndex} alt={product.name} className="card-gallery" />
+        {percent > 0 && <span className="discount-badge">-{percent}%</span>}
+        {soldOut && <span className="stock-badge">Agotado</span>}
       </div>
       <div className="product-card-body">
-        <p className="product-card-category"><Icon size={13} />{product.category}</p>
         <h3>{product.name}</h3>
-        {(variant?.description || product.description) && <p className="product-card-description">{variant?.description || product.description}</p>}
-        {options.length > 0 && (
-          <div className="product-card-options">
-            <label>Elige una opción</label>
-            <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-              {options.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-            <VariantSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
+        {hasSwatches && (
+          <div className="card-swatches" onClick={(event) => event.stopPropagation()}>
+            {swatchOptions.slice(0, 4).map((option) => (
+              <button type="button" key={option} className={option === selected ? 'active' : ''} title={option} aria-label={option} onClick={() => pickOption(option)}>
+                <img src={variantFor(product, option)?.image} alt="" loading="lazy" />
+              </button>
+            ))}
+            {swatchOptions.length > 4 && <span className="card-swatches-more">+{swatchOptions.length - 4}</span>}
           </div>
         )}
-        <div className="product-card-price">
-          {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
-          <strong>{money(product.price)}</strong>
+        {textOnlyOptions && <p className="card-options-hint">{options.length} opciones disponibles</p>}
+        {(product.bestSeller || product.isNew || (product.stock > 0 && product.stock <= 5)) && (
+          <p className="card-tags">
+            {product.bestSeller && <span className="tag-hot"><Flame size={11} />Más vendido</span>}
+            {!product.bestSeller && product.isNew && <span className="tag-new">Nuevo</span>}
+            {product.stock > 0 && product.stock <= 5 && <span className="tag-low">Quedan {product.stock}</span>}
+          </p>
+        )}
+        <div className="product-card-foot">
+          <div className="product-card-price">
+            <strong>{money(product.price)}</strong>
+            {percent > 0 && <s>{money(product.originalPrice)}</s>}
+          </div>
+          <button type="button" className={`card-add ${added ? 'done' : ''}`} disabled={soldOut} onClick={handleAdd} aria-label={textOnlyOptions ? 'Elegir opción' : 'Agregar al carrito'}>
+            {added ? <Check size={17} /> : <ShoppingCart size={17} />}
+            {!added && <Plus size={10} strokeWidth={3.2} className="card-add-plus" />}
+          </button>
         </div>
-        <button className="product-card-add" disabled={product.stock === 0} onClick={() => onAdd(product, selected || undefined)}>
-          {product.stock === 0 ? 'Agotado' : <>Agregar <Plus size={15} /></>}
-        </button>
       </div>
     </article>
   )
 }
 
-/** Vista ampliada de un producto (se abre al tocar la foto o el ícono de
- * ojo en la tarjeta): foto grande, categoría, nombre completo, la
- * descripción SIN recortar (en la tarjeta se corta a 2 líneas) y el
- * mismo selector de opciones + botón de agregar. */
-function ProductQuickView({ product, onAdd, onClose }: { product: Product; onAdd: (product: Product, option?: string) => void; onClose: () => void }) {
-  const Icon = categoryIcon(product.category)
-  const options = product.options.split(',').map((item) => item.trim()).filter(Boolean)
-  const [selected, setSelected] = useState(options[0] ?? '')
+const SHEET_ANIMATION_MS = 280
+
+/** Ficha completa del producto (como la página de producto de Temu):
+ * en el teléfono ocupa toda la pantalla y entra deslizándose desde abajo;
+ * en computadora es un diálogo de dos columnas. Tiene galería con número
+ * de foto, opciones con miniaturas, cantidad, descripción completa, un
+ * carrito flotante arriba y el botón de agregar fijo abajo. Agregar NO
+ * abre el carrito: solo muestra un aviso y sube el contador. */
+function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, onAdd, onOpenCart, onClose }: {
+  product: Product; initialOption: string; initialIndex: number; copy: Record<string, string>; cartCount: number
+  onAdd: AddHandler; onOpenCart: () => void; onClose: () => void
+}) {
+  const options = useMemo(() => parseOptions(product), [product])
+  const gallery = useMemo(() => buildGallery(product, options), [product, options])
+  const [selected, setSelected] = useState(initialOption || options[0] || '')
+  const [index, setIndex] = useState(() => Math.min(Math.max(0, initialIndex), gallery.length - 1))
+  const [quantity, setQuantity] = useState(1)
+  const [visible, setVisible] = useState(false)
+  const [added, setAdded] = useState(false)
+
   const variant = variantFor(product, selected)
+  const description = variant?.description || product.description
+  const percent = discountPercent(product)
+  const soldOut = product.stock <= 0
+  const hasImageOptions = options.some((option) => variantFor(product, option)?.image)
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setVisible(true))
+    return () => cancelAnimationFrame(frame)
+  }, [])
+
+  const close = () => {
+    setVisible(false)
+    setTimeout(onClose, SHEET_ANIMATION_MS)
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleIndex = (next: number) => {
+    setIndex(next)
+    const option = gallery[next]?.option
+    if (option) setSelected(option)
+  }
+  const pickOption = (option: string) => {
+    setSelected(option)
+    const galleryIndex = galleryIndexFor(gallery, option)
+    if (galleryIndex >= 0) setIndex(galleryIndex)
+  }
+  const handleAdd = () => {
+    if (!onAdd(product, selected || undefined, quantity)) return
+    setAdded(true)
+    setTimeout(() => setAdded(false), 1400)
+  }
+
+  const trust = [
+    { icon: Truck, title: copy.benefit3Title || 'Entrega rápida', text: copy.benefit3Text || copy.heroBadge || 'Envíos a todo el país' },
+    { icon: MessageCircle, title: copy.benefit2Title || 'Pedidos por WhatsApp', text: copy.benefit2Text || 'Coordina pago y entrega directo con nosotros.' },
+    { icon: ShieldCheck, title: copy.benefit1Title || 'Productos originales', text: copy.benefit1Text || 'Equipos y accesorios verificados.' },
+  ]
+
   return (
-    <div className="modal-wrap" onClick={onClose}>
-      <div className="modal-card product-quickview" onClick={(event) => event.stopPropagation()}>
-        <button className="modal-close icon-button" onClick={onClose}><X /></button>
-        <div className="product-quickview-media">
-          <DiscountBadge price={product.price} originalPrice={product.originalPrice} />
-          {product.stock === 0 && <span className="stock-badge">Agotado</span>}
-          <img src={variant?.image || product.image} alt={product.name} />
-        </div>
-        <div className="product-quickview-body">
-          <p className="product-card-category"><Icon size={13} />{product.category}</p>
-          <h2>{product.name}</h2>
-          {(variant?.description || product.description) && <p className="product-quickview-description">{variant?.description || product.description}</p>}
-          {options.length > 0 && (
-            <div className="product-card-options">
-              <label>Elige una opción</label>
-              <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-                {options.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-              <VariantSwatches product={product} options={options} selected={selected} onSelect={setSelected} />
-            </div>
-          )}
-          <div className="product-card-price">
-            {product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}
-            <strong>{money(product.price)}</strong>
-          </div>
-          <button className="primary-button full" disabled={product.stock === 0} onClick={() => { onAdd(product, selected || undefined); onClose() }}>
-            {product.stock === 0 ? 'Agotado' : <>Agregar al carrito <Plus size={15} /></>}
+    <div className={`pd-root ${visible ? 'open' : ''}`}>
+      <div className="pd-backdrop" onClick={close} />
+      <section className="pd-sheet" role="dialog" aria-modal="true" aria-label={product.name}>
+        <div className="pd-floating">
+          <button type="button" className="pd-round" onClick={close} aria-label="Cerrar"><ArrowLeft size={20} className="pd-back-icon" /><X size={20} className="pd-close-icon" /></button>
+          <button type="button" className="pd-round pd-cart" onClick={onOpenCart} aria-label="Ver carrito">
+            <ShoppingCart size={19} />
+            {cartCount > 0 && <b key={cartCount}>{cartCount}</b>}
           </button>
         </div>
-      </div>
+
+        <div className="pd-scroll">
+          <div className="pd-layout">
+            <div className="pd-media">
+              <Gallery items={gallery} index={index} onIndexChange={handleIndex} alt={product.name} className="pd-gallery" arrows eager />
+              {percent > 0 && <span className="discount-badge">-{percent}%</span>}
+              {gallery.length > 1 && (
+                <div className="pd-thumbs">
+                  {gallery.map((item, i) => (
+                    <button type="button" key={`${item.image}-${i}`} className={i === index ? 'active' : ''} onClick={() => handleIndex(i)} aria-label={`Foto ${i + 1}`}>
+                      <img src={item.image} alt="" loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pd-info">
+              <div className="pd-price">
+                <strong>{money(product.price)}</strong>
+                {percent > 0 && <>
+                  <s>{money(product.originalPrice)}</s>
+                  <span className="pd-off">-{percent}%</span>
+                </>}
+              </div>
+              {percent > 0 && <p className="pd-save">Ahorras {money(product.originalPrice - product.price)}</p>}
+
+              <h2 className="pd-title">{product.name}</h2>
+
+              <div className="pd-tags">
+                <span className="pd-tag-cat">{product.category}</span>
+                {product.bestSeller && <span className="tag-hot"><Flame size={11} />Más vendido</span>}
+                {product.isNew && <span className="tag-new">Nuevo</span>}
+                {soldOut ? <span className="tag-out">Agotado</span> : product.stock <= 5 ? <span className="tag-low">¡Solo quedan {product.stock}!</span> : <span className="tag-ok"><Check size={11} />Disponible</span>}
+              </div>
+
+              {options.length > 0 && (
+                <div className="pd-block">
+                  <div className="pd-block-head">
+                    <span>Opción: <strong>{selected}</strong></span>
+                    <em>{options.length} {options.length === 1 ? 'disponible' : 'disponibles'}</em>
+                  </div>
+                  {hasImageOptions ? (
+                    <div className="pd-variants">
+                      {options.map((option) => (
+                        <button type="button" key={option} className={option === selected ? 'active' : ''} onClick={() => pickOption(option)}>
+                          <span className="pd-variant-img"><img src={variantFor(product, option)?.image || product.image} alt="" loading="lazy" /></span>
+                          <span className="pd-variant-name">{option}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="pd-chips">
+                      {options.map((option) => (
+                        <button type="button" key={option} className={option === selected ? 'active' : ''} onClick={() => pickOption(option)}>{option}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="pd-block pd-qty">
+                <span>Cantidad</span>
+                <div className="pd-stepper">
+                  <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} disabled={quantity <= 1} aria-label="Menos"><Minus size={15} /></button>
+                  <output aria-live="polite">{quantity}</output>
+                  <button type="button" onClick={() => setQuantity((q) => Math.min(Math.max(1, product.stock), q + 1))} disabled={soldOut || quantity >= product.stock} aria-label="Más"><Plus size={15} /></button>
+                </div>
+              </div>
+
+              <ul className="pd-trust">
+                {trust.map(({ icon: TrustIcon, title, text }) => (
+                  <li key={title}><TrustIcon size={17} /><div><strong>{title}</strong><span>{text}</span></div></li>
+                ))}
+              </ul>
+
+              {description && (
+                <div className="pd-block pd-desc">
+                  <h3>Descripción</h3>
+                  <p>{description}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="pd-actionbar">
+          <div className="pd-actionbar-total">
+            <span>Total</span>
+            <strong>{money(product.price * quantity)}</strong>
+          </div>
+          <button type="button" className={`pd-add ${added ? 'done' : ''}`} disabled={soldOut} onClick={handleAdd}>
+            {soldOut ? 'Agotado' : added ? <><Check size={18} />Agregado</> : <><ShoppingCart size={18} />Agregar al carrito</>}
+          </button>
+        </div>
+      </section>
     </div>
   )
 }
@@ -231,7 +462,7 @@ function OrderReceipt({ orderNumber, items, total, whatsapp }: { orderNumber: st
       <p className="receipt-thanks">¡Gracias por tu pedido! 🎉</p>
       <p className="receipt-ref">Ref. {orderNumber} · {today}</p>
       <div className="receipt-items">
-        {items.map((item) => <div key={item.productId}><span>{item.quantity}x {item.name}</span><b>{money(item.price * item.quantity)}</b></div>)}
+        {items.map((item) => <div key={`${item.productId}::${item.name}`}><span>{item.quantity}x {item.name}</span><b>{money(item.price * item.quantity)}</b></div>)}
       </div>
       <div className="receipt-divider" />
       <div className="receipt-total"><span>Total</span><b>{money(total)}</b></div>
@@ -421,9 +652,18 @@ export function Storefront({ data }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [sharingImage, setSharingImage] = useState(false)
   const [error, setError] = useState('')
-  const [quickView, setQuickView] = useState<Product | null>(null)
-  const [toast, setToast] = useState('')
+  const [quickView, setQuickView] = useState<{ product: Product; option: string; index: number } | null>(null)
+  const [toast, setToast] = useState<{ title: string; name: string; image: string } | null>(null)
+  const [toastVisible, setToastVisible] = useState(false)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Mientras está abierta la ficha del producto, el carrito o el menú, la
+  // página de atrás no se desplaza (evita el "doble scroll" en el teléfono).
+  useEffect(() => {
+    const locked = Boolean(quickView || cartOpen || menuOpen || checkoutOpen)
+    document.documentElement.classList.toggle('scroll-locked', locked)
+    return () => document.documentElement.classList.remove('scroll-locked')
+  }, [quickView, cartOpen, menuOpen, checkoutOpen])
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
@@ -444,28 +684,53 @@ export function Storefront({ data }: Props) {
   const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0)
   const subtotal = cart.reduce((sum, line) => sum + line.price * line.quantity, 0)
 
-  const addToCart = (product: Product, option?: string) => {
+  const showToast = (next: { title: string; name: string; image: string }) => {
+    setToast(next)
+    setToastVisible(true)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToastVisible(false), 2600)
+  }
+
+  /** Agrega sin abrir el carrito: solo sube el contador y muestra un
+   * aviso con la foto y un botón "Ver carrito". Cada opción (color,
+   * modelo…) es su propia línea en el carrito, y el total de unidades de
+   * un mismo producto nunca pasa del stock disponible. Devuelve false si
+   * no se pudo agregar nada (ya estaba al máximo). */
+  const addToCart = (product: Product, option: string | undefined, quantity: number): boolean => {
     const variant = option ? variantFor(product, option) : undefined
     const name = option ? `${product.name} — ${option}` : product.name
     const image = variant?.image || product.image
+    const inCart = cart.filter((line) => line.productId === product.id).reduce((sum, line) => sum + line.quantity, 0)
+    const addable = Math.min(quantity, Math.max(0, product.stock - inCart))
+    if (addable <= 0) {
+      showToast({ title: `Ya tienes todas las unidades disponibles (${product.stock})`, name, image })
+      return false
+    }
     setCart((current) => {
       const existing = current.find((line) => line.productId === product.id && line.name === name)
-      if (existing) return current.map((line) => line === existing ? { ...line, quantity: Math.min(line.quantity + 1, product.stock) } : line)
-      return [...current, { productId: product.id, name, price: product.price, quantity: 1, image }]
+      if (existing) return current.map((line) => line === existing ? { ...line, quantity: line.quantity + addable } : line)
+      return [...current, { productId: product.id, name, price: product.price, quantity: addable, image }]
     })
-    // En vez de abrir el carrito de golpe (lo que interrumpía seguir viendo
-    // la tienda), se muestra un aviso chiquito que desaparece solo.
-    setToast(`${name} agregado ✓`)
-    if (toastTimer.current) clearTimeout(toastTimer.current)
-    toastTimer.current = setTimeout(() => setToast(''), 1800)
+    showToast({ title: addable < quantity ? `Solo se agregaron ${addable} (stock disponible)` : `Agregado al carrito${addable > 1 ? ` · ${addable} uds.` : ''}`, name, image })
+    return true
   }
 
-  const changeQuantity = (id: number, delta: number) => setCart((current) => current.flatMap((line) => {
-    if (line.productId !== id) return [line]
-    const product = products.find((item) => item.id === id)
-    const quantity = Math.min(line.quantity + delta, product?.stock ?? line.quantity)
-    return quantity > 0 ? [{ ...line, quantity }] : []
-  }))
+  const lineKey = (line: CartLine) => `${line.productId}::${line.name}`
+
+  const changeQuantity = (key: string, delta: number) => setCart((current) => {
+    const target = current.find((line) => lineKey(line) === key)
+    if (!target) return current
+    const product = products.find((item) => item.id === target.productId)
+    const others = current.filter((line) => line.productId === target.productId && line !== target).reduce((sum, line) => sum + line.quantity, 0)
+    const max = Math.max(0, (product?.stock ?? target.quantity) - others)
+    const quantity = Math.min(target.quantity + delta, max)
+    return quantity > 0 ? current.map((line) => (line === target ? { ...line, quantity } : line)) : current.filter((line) => line !== target)
+  })
+
+  const openCartFromSheet = () => {
+    setToastVisible(false)
+    setCartOpen(true)
+  }
 
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -545,7 +810,7 @@ export function Storefront({ data }: Props) {
       </nav>
       <div className="topbar-actions">
         <ShareButton title={copy.brandName} />
-        <button className="cart-button" onClick={() => setCartOpen(true)} aria-label="Ver carrito"><ShoppingCart size={19} /><b>{cartCount}</b></button>
+        <button className="cart-button" onClick={() => setCartOpen(true)} aria-label="Ver carrito"><ShoppingCart size={19} />{cartCount > 0 && <b key={cartCount}>{cartCount}</b>}</button>
       </div>
     </header>
 
@@ -603,7 +868,7 @@ export function Storefront({ data }: Props) {
           <button className={offersTab === 'bestSeller' ? 'active' : ''} onClick={() => setOffersTab('bestSeller')}>Más vendidos</button>
         </div>
         <div className="product-grid">
-          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onView={setQuickView} />)}
+          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} />)}
         </div>
       </section>
 
@@ -631,7 +896,7 @@ export function Storefront({ data }: Props) {
             </div>
           </aside>
           <div className="product-grid">
-            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onView={setQuickView} />)}
+            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} />)}
             {visibleProducts.length === 0 && <div className="empty-state"><Search /><h3>No encontramos ese producto</h3><p>Prueba otra palabra o categoría.</p></div>}
           </div>
         </div>
@@ -682,27 +947,34 @@ export function Storefront({ data }: Props) {
     <nav className="mobile-tabbar">
       <a href="#inicio"><Home size={20} /><span>Inicio</span></a>
       <a href="#tienda"><Store size={20} /><span>Tienda</span></a>
-      <button onClick={() => setCartOpen(true)}><ShoppingCart size={20} />{cartCount > 0 && <b>{cartCount}</b>}<span>Carrito</span></button>
+      <button onClick={() => setCartOpen(true)}><ShoppingCart size={20} />{cartCount > 0 && <b key={cartCount}>{cartCount}</b>}<span>Carrito</span></button>
       <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={20} /><span>WhatsApp</span></a>
     </nav>
 
-    <div className={`toast ${toast ? 'visible' : ''}`}>{toast}</div>
+    <div className={`toast ${toastVisible ? 'visible' : ''}`} role="status" aria-live="polite">
+      {toast && <>
+        <img src={toast.image} alt="" />
+        <div className="toast-text"><strong>{toast.title}</strong><span>{toast.name}</span></div>
+        <button type="button" onClick={openCartFromSheet}>Ver carrito</button>
+      </>}
+    </div>
 
-    <div className={`overlay ${cartOpen ? 'visible' : ''}`} onClick={() => setCartOpen(false)} />
+    <div className={`overlay cart-overlay ${cartOpen ? 'visible' : ''}`} onClick={() => setCartOpen(false)} />
     <aside className={`cart-drawer ${cartOpen ? 'open' : ''}`}>
       <div className="drawer-head"><div><span className="drawer-kicker">CARRITO · {cartCount} {cartCount === 1 ? 'ARTÍCULO' : 'ARTÍCULOS'}</span><h2>{copy.cartTitle}</h2></div><button className="icon-button" onClick={() => setCartOpen(false)}><X /></button></div>
       <div className="cart-lines">
-        {cart.map((line) => <div className="cart-line" key={line.productId}>
+        {cart.map((line) => <div className="cart-line" key={lineKey(line)}>
           <img src={line.image} alt="" />
-          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(line.productId, -1)}><Minus size={14} /></button><span>{line.quantity}</span><button onClick={() => changeQuantity(line.productId, 1)}><Plus size={14} /></button></div></div>
-          <button className="remove" onClick={() => setCart((current) => current.filter((item) => item.productId !== line.productId))}><Trash2 size={16} /></button>
+          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(lineKey(line), -1)} aria-label="Menos"><Minus size={14} /></button><span>{line.quantity}</span><button onClick={() => changeQuantity(lineKey(line), 1)} aria-label="Más"><Plus size={14} /></button></div></div>
+          <button className="remove" aria-label="Quitar" onClick={() => setCart((current) => current.filter((item) => lineKey(item) !== lineKey(line)))}><Trash2 size={16} /></button>
         </div>)}
         {!cart.length && <div className="empty-cart"><ShoppingCart /><h3>Tu carrito está vacío</h3><p>Explora el catálogo y agrega tus productos favoritos.</p></div>}
       </div>
       <div className="cart-summary">
         <div><span>Subtotal</span><strong>{money(subtotal)}</strong></div>
         <p>La entrega se coordina después de confirmar el pedido.</p>
-        <button className="primary-button full" disabled={!cart.length} onClick={() => { setCartOpen(false); setCheckoutOpen(true) }}>Continuar al checkout <ArrowRight size={16} /></button>
+        <button className="primary-button full" disabled={!cart.length} onClick={() => { setCartOpen(false); setQuickView(null); setCheckoutOpen(true) }}>Continuar al checkout <ArrowRight size={16} /></button>
+        <button className="ghost-button full cart-continue" onClick={() => setCartOpen(false)}>Seguir comprando</button>
       </div>
     </aside>
 
@@ -732,14 +1004,14 @@ export function Storefront({ data }: Props) {
         </div>
         <div className="order-review">
           <h3>Resumen</h3>
-          {cart.map((line) => <div key={line.productId}><span>{line.quantity} × {line.name}</span><strong>{money(line.quantity * line.price)}</strong></div>)}
+          {cart.map((line) => <div key={lineKey(line)}><span>{line.quantity} × {line.name}</span><strong>{money(line.quantity * line.price)}</strong></div>)}
           <div className="checkout-total"><span>Total</span><strong>{money(subtotal)}</strong></div>
           <button form="checkout-form" disabled={submitting} className="primary-button full">{submitting ? 'Enviando...' : 'Enviar pedido'}<ArrowRight size={16} /></button>
         </div>
       </div>}
     </div></div>}
 
-    {quickView && <ProductQuickView product={quickView} onAdd={addToCart} onClose={() => setQuickView(null)} />}
+    {quickView && <ProductSheet key={quickView.product.id} product={quickView.product} initialOption={quickView.option} initialIndex={quickView.index} copy={copy} cartCount={cartCount} onAdd={addToCart} onOpenCart={openCartFromSheet} onClose={() => setQuickView(null)} />}
 
     <div className="receipt-capture" ref={receiptRef}>
       {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={whatsappDigits} />}
