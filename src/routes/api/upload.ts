@@ -19,9 +19,12 @@ export const Route = createFileRoute('/api/upload')({
 
         try {
           const buffer = await file.arrayBuffer()
+          // Se arma en bloques de 32 KB en vez de letra por letra: con fotos
+          // grandes el bucle anterior gastaba mucho tiempo de CPU del Worker
+          // (y en el plan gratis eso puede cortar la subida).
           let binary = ''
           const bytes = new Uint8Array(buffer)
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+          for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
           const dataUrl = `data:${file.type};base64,${btoa(binary)}`
           const url = await uploadImage(env, { filename: file.name, dataUrl })
           return Response.json({ url })

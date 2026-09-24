@@ -81,7 +81,7 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
   doc.text('Gracias por comprar en JB Tech Store.', 40, y + 40)
   return doc
 }
-type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; notes: string; createdAt: string }
+type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
 type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
 type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
 type ProductDraft = { id?: number; name: string; category: string; description: string; options: string; price: string; originalPrice: string; stock: string; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
@@ -154,7 +154,32 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
   ] },
 ]
 
-async function uploadFile(file: File): Promise<string> {
+/** Achica la foto en el teléfono ANTES de subirla: máximo 1600 px de lado
+ * y formato WebP (~85% calidad). Una foto de cámara de 4–6 MB queda en
+ * ~200–400 KB: sube mucho más rápido y la tienda carga más rápido para
+ * los clientes. Si el navegador no puede procesarla, se sube la original. */
+async function compressImage(file: File): Promise<File> {
+  if (!file.type.startsWith('image/') || file.type === 'image/gif' || file.type === 'image/svg+xml') return file
+  try {
+    const bitmap = await createImageBitmap(file)
+    const MAX = 1600
+    const scale = Math.min(1, MAX / Math.max(bitmap.width, bitmap.height))
+    if (scale === 1 && file.size < 400_000) { bitmap.close(); return file }
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(bitmap.width * scale)
+    canvas.height = Math.round(bitmap.height * scale)
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    bitmap.close()
+    const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.85))
+    if (!blob || blob.type !== 'image/webp' || blob.size >= file.size) return file
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.webp', { type: 'image/webp' })
+  } catch {
+    return file
+  }
+}
+
+async function uploadFile(original: File): Promise<string> {
+  const file = await compressImage(original)
   const form = new FormData()
   form.append('file', file)
   const response = await fetch('/api/upload', { method: 'POST', body: form })
@@ -198,6 +223,9 @@ export function AdminPanel() {
   const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[]; discount: number } | null>(null)
   const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
   const [browserVoices, setBrowserVoices] = useState<string[] | null>(null)
+  const [purchaseQuery, setPurchaseQuery] = useState('')
+  const [purchaseLimit, setPurchaseLimit] = useState(15)
+  const [expenseLimit, setExpenseLimit] = useState(15)
 
   async function refresh() {
     const adminData = await getAdminData()
@@ -447,16 +475,27 @@ export function AdminPanel() {
 
   const filteredProducts = data.products.filter((product) => product.name.toLowerCase().includes(query.toLowerCase()))
   const filteredOrders = data.orders.filter((order) => `${order.orderNumber} ${order.customerName} ${order.phone}`.toLowerCase().includes(query.toLowerCase()))
+  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.notes}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
   const filteredCustomers = data.customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.email}`.toLowerCase().includes(query.toLowerCase()))
   const pendingOrders = data.orders.filter((order) => order.status === 'Pendiente').length
   const outOfStock = data.products.filter((product) => product.stock === 0).length
+  const lowStock = data.products.filter((product) => product.active && product.stock > 0 && product.stock <= 3)
+  const porCobrarOrders = data.orders.filter((order) => order.paymentStatus !== 'Pagado' && order.status !== 'Cancelado')
+  const porCobrar = porCobrarOrders.reduce((sum, order) => sum + order.total, 0)
+  // Unidades en stock que no tienen una compra registrada detrás: al
+  // venderse, su costo cuenta como 0 y la ganancia sale inflada.
+  const remainingByProduct = new Map<number, number>()
+  for (const purchase of data.purchases) remainingByProduct.set(purchase.productId, (remainingByProduct.get(purchase.productId) ?? 0) + (purchase.remainingQuantity ?? 0))
+  const uncostedProducts = data.products.filter((product) => product.stock > (remainingByProduct.get(product.id) ?? 0) && product.cost === 0)
   const trashTotal = data.trash.products.length + data.trash.orders.length + data.trash.customers.length + data.trash.images.length
 
   // Finanzas: todo se calcula a partir de pedidos pagados + compras +
   // gastos registrados, igual espíritu que el "Resumen" del Excel de
   // Yeilin pero automático. `cost` en cada item del pedido es una copia
   // del costo promedio del producto al momento de la venta.
-  const paidOrders = data.orders.filter((order) => order.paymentStatus === 'Pagado')
+  // Un pedido cancelado no cuenta aunque haya quedado marcado "Pagado"
+  // (por ejemplo, si se le devolvió el dinero al cliente).
+  const paidOrders = data.orders.filter((order) => order.paymentStatus === 'Pagado' && order.status !== 'Cancelado')
   const ingresos = paidOrders.reduce((sum, order) => sum + order.total, 0)
   const costoVentas = paidOrders.reduce((sum, order) => sum + order.items.reduce((s, item) => s + item.cost * item.quantity, 0), 0)
   const gananciaBruta = ingresos - costoVentas
@@ -507,7 +546,19 @@ export function AdminPanel() {
               <div className="admin-card"><span>Agotados</span><strong>{outOfStock}</strong></div>
               <div className="admin-card"><span>Pedidos pendientes</span><strong>{pendingOrders}</strong></div>
               <div className="admin-card"><span>Clientes</span><strong>{data.customers.length}</strong></div>
+              <div className="admin-card"><span>Por cobrar ({porCobrarOrders.length})</span><strong>{money(porCobrar)}</strong></div>
+              <div className="admin-card"><span>Stock bajo (≤3)</span><strong>{lowStock.length}</strong></div>
             </div>
+            {lowStock.length > 0 && <>
+              <h3>Quedan pocas unidades</h3>
+              <div className="admin-table">
+                {lowStock.slice(0, 8).map((product) => <div className="admin-row admin-row-product" key={product.id}>
+                  <img src={product.image || '/logo.png'} alt="" />
+                  <div><strong>{product.name}</strong><span>Quedan {product.stock}</span></div>
+                  <button className="ghost-button" onClick={() => { setTab('finanzas'); setEditingPurchase({ ...emptyPurchaseDraft(), productId: String(product.id) }) }}>Reponer</button>
+                </div>)}
+              </div>
+            </>}
             <h3>Últimos pedidos</h3>
             <div className="admin-table">
               {data.orders.slice(0, 6).map((order) => <div className="admin-row" key={order.id}>
@@ -560,22 +611,38 @@ export function AdminPanel() {
             </div>
             <div className="admin-cards">
               <div className="admin-card"><span>Disponible para retirar</span><strong>{money(disponibleRetirar)}</strong></div>
+              <div className="admin-card"><span>Por cobrar ({porCobrarOrders.length} pedidos)</span><strong>{money(porCobrar)}</strong></div>
             </div>
-            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" en Pedidos. Un pedido "Pendiente" todavía no mueve el capital.</p>
+            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" (y que no estén cancelados). Un pedido sin pagar todavía no mueve el capital: aparece en "Por cobrar".</p>
+            {uncostedProducts.length > 0 && (
+              <p className="form-error">
+                {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades en stock sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en Catálogo y regístralas con «Registrar compra».
+              </p>
+            )}
 
-            <h3>Compras recientes</h3>
+            <h3>Compras registradas ({data.purchases.length})</h3>
+            <label className="search-field admin-search"><Search size={16} /><input value={purchaseQuery} onChange={(event) => { setPurchaseQuery(event.target.value); setPurchaseLimit(15) }} placeholder="Buscar compra por producto o nota..." /></label>
             <div className="admin-table">
-              {data.purchases.slice(0, 15).map((purchase) => <div className="admin-row" key={purchase.id}>
-                <div><strong>{purchase.productName}</strong><span>{purchase.quantity} × {money(purchase.unitCost)} · {dateFmt(purchase.createdAt)}{purchase.notes ? ` · ${purchase.notes}` : ''}</span></div>
-                <strong>{money(purchase.totalCost)}</strong>
-                <button className="icon-button" title="Eliminar compra (ej. si fue de prueba)" onClick={() => { if (window.confirm('¿Eliminar esta compra? Esto resta del stock lo que quede sin vender de ese lote y baja el Capital usado.')) withBusy(() => deletePurchase({ data: purchase.id })) }}><Trash2 size={15} /></button>
-              </div>)}
-              {!data.purchases.length && <p className="admin-empty">Todavía no has registrado compras.</p>}
+              {filteredPurchases.slice(0, purchaseLimit).map((purchase) => {
+                const sold = purchase.quantity - (purchase.remainingQuantity ?? 0)
+                return <div className="admin-row" key={purchase.id}>
+                  <div><strong>{purchase.productName}</strong><span>{purchase.quantity} × {money(purchase.unitCost)} · {dateFmt(purchase.createdAt)} · {sold <= 0 ? 'nada vendido aún' : purchase.remainingQuantity > 0 ? `vendidas ${sold}, quedan ${purchase.remainingQuantity}` : 'lote vendido completo'}{purchase.notes ? ` · ${purchase.notes}` : ''}</span></div>
+                  <strong>{money(purchase.totalCost)}</strong>
+                  <button className="icon-button" title="Eliminar compra (ej. si se registró mal)" disabled={busy || purchase.remainingQuantity <= 0} onClick={() => {
+                    const message = sold > 0
+                      ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan (del stock y del Capital usado). ¿Continuar?`
+                      : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del stock y ${money(purchase.totalCost)} vuelven al Capital disponible.`
+                    if (window.confirm(message)) withBusy(() => deletePurchase({ data: purchase.id }))
+                  }}><Trash2 size={15} /></button>
+                </div>
+              })}
+              {!filteredPurchases.length && <p className="admin-empty">{data.purchases.length ? 'Ninguna compra coincide.' : 'Todavía no has registrado compras.'}</p>}
+              {filteredPurchases.length > purchaseLimit && <button className="ghost-button" onClick={() => setPurchaseLimit((limit) => limit + 30)}>Ver más compras ({filteredPurchases.length - purchaseLimit} más)</button>}
             </div>
 
-            <h3>Gastos recientes</h3>
+            <h3>Gastos registrados ({data.expenses.length})</h3>
             <div className="admin-table">
-              {data.expenses.slice(0, 15).map((expense) => <div className="admin-row" key={expense.id}>
+              {data.expenses.slice(0, expenseLimit).map((expense) => <div className="admin-row" key={expense.id}>
                 <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}</span></div>
                 <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : 'Personal'}</span>
                 <strong>{money(expense.amount)}</strong>
@@ -584,6 +651,7 @@ export function AdminPanel() {
                 </div>
               </div>)}
               {!data.expenses.length && <p className="admin-empty">Todavía no has registrado gastos.</p>}
+              {data.expenses.length > expenseLimit && <button className="ghost-button" onClick={() => setExpenseLimit((limit) => limit + 30)}>Ver más gastos ({data.expenses.length - expenseLimit} más)</button>}
             </div>
           </section>
         )}
@@ -598,11 +666,11 @@ export function AdminPanel() {
             <div className="admin-table">
               {filteredProducts.map((product) => <div className="admin-row admin-row-product" key={product.id}>
                 <img src={product.image || '/logo.png'} alt="" />
-                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo prom. {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}{product.variantImages?.length > 0 && ` · ${product.variantImages.length} con foto propia`}</span></div>
+                <div><strong>{product.name}</strong><span>{product.category} · {product.stock} en stock · Costo actual {money(product.cost)}{!product.active && ' · Oculto'}{product.options && ` · Opciones: ${product.options}`}{product.variantImages?.length > 0 && ` · ${product.variantImages.length} con foto propia`}</span></div>
                 <div className="admin-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<strong>{money(product.price)}</strong></div>
                 <div className="admin-row-actions">
                   <button onClick={() => setEditing(toDraft(product))}><Pencil size={15} /></button>
-                  <button onClick={() => withBusy(() => deleteProduct({ data: product.id }))}><Trash2 size={15} /></button>
+                  <button onClick={() => { if (window.confirm(`¿Enviar «${product.name}» a la papelera? Deja de verse en la tienda; lo puedes restaurar durante 30 días.`)) withBusy(() => deleteProduct({ data: product.id })) }}><Trash2 size={15} /></button>
                 </div>
               </div>)}
               {!filteredProducts.length && <p className="admin-empty">No hay productos que coincidan.</p>}
@@ -622,16 +690,22 @@ export function AdminPanel() {
                     <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })), discount: order.discount })}><Pencil size={15} /></button>
                     <button className="icon-button" title="Descargar factura (PDF)" disabled={busy} onClick={() => handleDownloadInvoice(order)}><Download size={15} /></button>
                     <button className="icon-button" title="Compartir factura" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
-                    <button className="icon-button" onClick={() => { if (window.confirm('¿Enviar este pedido a la papelera?')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
+                    <button className="icon-button" title="Enviar a la papelera" onClick={() => { if (window.confirm(order.status === 'Cancelado' ? '¿Enviar este pedido a la papelera?' : '¿Enviar este pedido a la papelera?\n\nOjo: esto NO devuelve las unidades al inventario. Si el pedido no se concretó, primero cámbialo a "Cancelado" (eso sí las devuelve).')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
                   </div>
                 </div>
                 <p className="admin-order-customer">{order.customerName} · {order.phone}{order.address ? ` · ${order.address}` : ''}</p>
-                <ul className="admin-order-items">{order.items.map((item) => <li key={item.id}>{item.quantity}× {item.name} <span>{money(item.price * item.quantity)}</span></li>)}</ul>
+                <ul className="admin-order-items">{order.items.map((item, index) => <li key={`${item.id}-${index}`}>{item.quantity}× {item.name} <span>{money(item.price * item.quantity)}</span></li>)}</ul>
                 <div className="admin-order-foot">
-                  <select value={order.status} onChange={(event) => withBusy(() => updateOrderStatus({ data: { id: order.id, status: event.target.value, paymentStatus: order.paymentStatus } }))}>
+                  <select value={order.status} disabled={busy} onChange={(event) => {
+                    const next = event.target.value
+                    const units = order.items.reduce((sum, item) => sum + item.quantity, 0)
+                    if (next === 'Cancelado' && !window.confirm(`¿Cancelar el pedido ${order.orderNumber}? Sus ${units} unidades vuelven al inventario.`)) return
+                    if (order.status === 'Cancelado' && next !== 'Cancelado' && !window.confirm(`¿Reactivar el pedido ${order.orderNumber}? Se vuelven a sacar ${units} unidades del inventario.`)) return
+                    withBusy(() => updateOrderStatus({ data: { id: order.id, status: next, paymentStatus: order.paymentStatus } }))
+                  }}>
                     {ORDER_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
                   </select>
-                  <select value={order.paymentStatus} onChange={(event) => withBusy(() => updateOrderStatus({ data: { id: order.id, status: order.status, paymentStatus: event.target.value } }))}>
+                  <select value={order.paymentStatus} disabled={busy} onChange={(event) => withBusy(() => updateOrderStatus({ data: { id: order.id, status: order.status, paymentStatus: event.target.value } }))}>
                     {PAYMENT_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
                   </select>
                   {order.discount > 0 && <span className="order-discount-tag">Descuento -{money(order.discount)}</span>}
@@ -824,7 +898,7 @@ export function AdminPanel() {
       {editingOrder && <div className="modal-wrap"><div className="modal-card">
         <button className="modal-close icon-button" onClick={() => setEditingOrder(null)}><X /></button>
         <h2>Editar pedido</h2>
-        <p>Corrige los datos del cliente o los números de este pedido — por ejemplo, si algo se anotó mal.</p>
+        <p>Corrige los datos del cliente o los números de este pedido. Si cambias una cantidad o quitas un producto, el inventario se ajusta solo.</p>
         <form className="product-form" onSubmit={handleSaveOrder}>
           <label>Nombre del cliente<input required value={editingOrder.customerName} onChange={(event) => setEditingOrder((current) => current && { ...current, customerName: event.target.value })} /></label>
           <div className="form-row">
@@ -835,7 +909,7 @@ export function AdminPanel() {
           <label>Notas (opcional)<input value={editingOrder.notes} onChange={(event) => setEditingOrder((current) => current && { ...current, notes: event.target.value })} /></label>
           <label>Productos del pedido</label>
           {editingOrder.items.map((item, index) => (
-            <div className="order-edit-item" key={item.id ?? index}>
+            <div className="order-edit-item" key={`${item.id}-${index}`}>
               <input value={item.name} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, name: event.target.value } : row) })} />
               <input type="number" min={1} value={item.quantity} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Number(event.target.value) } : row) })} />
               <input type="number" min={0} step="0.01" value={item.price / 100} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, price: Math.round(Number(event.target.value) * 100) } : row) })} />
@@ -859,12 +933,12 @@ export function AdminPanel() {
       {editingPurchase && <div className="modal-wrap"><div className="modal-card">
         <button className="modal-close icon-button" onClick={() => setEditingPurchase(null)}><X /></button>
         <h2>Registrar compra</h2>
-        <p>Suma al stock del producto y recalcula su costo promedio. No se puede editar ni borrar después — si te equivocas, registra otra compra que lo corrija.</p>
+        <p>Suma las unidades al stock del producto y saca el dinero del Capital disponible. Si te equivocas, puedes borrarla desde «Compras registradas».</p>
         <form className="product-form" onSubmit={handleSavePurchase}>
           <label>Producto
             <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...current, productId: event.target.value })}>
               <option value="" disabled>Selecciona un producto</option>
-              {data.products.map((product) => <option key={product.id} value={product.id}>{product.name} (stock actual: {product.stock})</option>)}
+              {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((product) => <option key={product.id} value={product.id}>{product.name} (stock actual: {product.stock})</option>)}
             </select>
           </label>
           <div className="form-row">
@@ -872,6 +946,9 @@ export function AdminPanel() {
             <label>Costo por unidad (RD$)<input required type="number" min={0} step="0.01" value={editingPurchase.unitCost} onChange={(event) => setEditingPurchase((current) => current && { ...current, unitCost: event.target.value })} /></label>
           </div>
           <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
+          {Number(editingPurchase.quantity) > 0 && Number(editingPurchase.unitCost) >= 0 && editingPurchase.unitCost !== '' && (
+            <p className="order-edit-total">Total de la compra: <strong>{money(Math.round(Number(editingPurchase.quantity) * Number(editingPurchase.unitCost) * 100))}</strong> · Capital disponible después: <strong>{money(capitalDisponible - Math.round(Number(editingPurchase.quantity) * Number(editingPurchase.unitCost) * 100))}</strong></p>
+          )}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
         </form>

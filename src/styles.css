@@ -674,10 +674,11 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 
 .admin-search { margin-bottom: 16px; max-width: 360px; }
 
-.admin-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 16px 0 28px; }
+.admin-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0 28px; }
 .admin-card { background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 16px; }
 .admin-card span { display: block; color: var(--ink-faint); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
-.admin-card strong { display: block; color: var(--white); font-size: 26px; margin-top: 6px; }
+.admin-card { min-width: 0; }
+.admin-card strong { display: block; color: var(--white); font-size: clamp(17px, 5.2vw, 26px); margin-top: 6px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
 .admin-table { display: flex; flex-direction: column; gap: 8px; }
 .admin-row {
@@ -749,7 +750,7 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 @media (min-width: 720px) {
   .product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .footer-grid { grid-template-columns: 1.4fr 1fr 1fr 1fr; }
-  .admin-cards { grid-template-columns: repeat(4, 1fr); }
+  .admin-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .form-row { grid-template-columns: 1fr 1fr; }
 }
 

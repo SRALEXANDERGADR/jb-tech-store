@@ -131,10 +131,84 @@ async function consumeFifoCost(productId: number, quantity: number): Promise<num
   }
   // El "costo actual" mostrado del producto pasa a ser el del próximo lote
   // disponible (el siguiente que se va a consumir), no un promedio.
-  const [nextBatch] = await db.select({ unitCost: purchases.unitCost }).from(purchases).where(and(eq(purchases.productId, productId), gt(purchases.remainingQuantity, 0))).orderBy(purchases.createdAt, purchases.id).limit(1)
-  if (nextBatch) await db.update(products).set({ cost: nextBatch.unitCost }).where(eq(products.id, productId))
+  await syncCurrentCost(productId)
   return totalCost
 }
+
+/** Devuelve `quantity` unidades al inventario (pedido cancelado o
+ * editado a menos unidades). Las unidades vuelven a los lotes de compra de
+ * los que salieron: primero al lote más reciente que ya se había empezado
+ * a vender, luego a los anteriores — el reverso exacto de consumeFifoCost. */
+async function returnToFifo(productId: number, quantity: number) {
+  if (quantity <= 0) return
+  const [product] = await db.select({ id: products.id }).from(products).where(eq(products.id, productId)).limit(1)
+  if (!product) return // el producto se eliminó definitivamente: no hay a dónde devolver
+  let remaining = quantity
+  const batches = await db.select().from(purchases)
+    .where(and(eq(purchases.productId, productId), lt(purchases.remainingQuantity, purchases.quantity)))
+    .orderBy(desc(purchases.createdAt), desc(purchases.id))
+  for (const batch of batches) {
+    if (remaining <= 0) break
+    const put = Math.min(batch.quantity - batch.remainingQuantity, remaining)
+    if (put <= 0) continue
+    await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity + put }).where(eq(purchases.id, batch.id))
+    remaining -= put
+  }
+  await db.update(products).set({ stock: sql`${products.stock} + ${quantity}` }).where(eq(products.id, productId))
+  await syncCurrentCost(productId)
+}
+
+/** Saca `quantity` unidades del inventario (FIFO) y devuelve su costo
+ * total. Falla con un mensaje claro si no hay suficiente stock. */
+async function takeStock(productId: number, quantity: number, label: string): Promise<number> {
+  if (quantity <= 0) return 0
+  const [product] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, productId)).limit(1)
+  if (!product) throw new Error(`El producto ${label} ya no existe.`)
+  if (product.stock < quantity) throw new Error(`Stock insuficiente para ${label} (quedan ${product.stock}).`)
+  const cost = await consumeFifoCost(productId, quantity)
+  await db.update(products).set({ stock: sql`${products.stock} - ${quantity}` }).where(eq(products.id, productId))
+  return cost
+}
+
+/** El "costo actual" del producto es el del próximo lote que se va a
+ * vender (FIFO). Si ya no quedan lotes con unidades, se deja como está. */
+async function syncCurrentCost(productId: number) {
+  const [nextBatch] = await db.select({ unitCost: purchases.unitCost }).from(purchases)
+    .where(and(eq(purchases.productId, productId), gt(purchases.remainingQuantity, 0)))
+    .orderBy(purchases.createdAt, purchases.id).limit(1)
+  if (nextBatch) await db.update(products).set({ cost: nextBatch.unitCost }).where(eq(products.id, productId))
+}
+
+/** Suma las unidades por producto (un mismo producto puede venir en
+ * varias líneas, una por color/opción). */
+function unitsByProduct(items: Array<{ id: number; quantity: number }>) {
+  const map = new Map<number, number>()
+  for (const item of items) map.set(item.id, (map.get(item.id) ?? 0) + item.quantity)
+  return map
+}
+
+// Mantenimiento (textos por defecto + limpieza de papelera): antes se
+// hacía en CADA carga de la tienda y después de CADA acción del panel,
+// lo que agregaba varias consultas lentas a Neon cada vez. Ahora se hace
+// como máximo una vez cada 6 horas por instancia del Worker.
+const MAINTENANCE_MS = 6 * 60 * 60 * 1000
+let seededAt = 0
+let cleanedAt = 0
+
+async function ensureSeededThrottled() {
+  if (Date.now() - seededAt < MAINTENANCE_MS) return
+  await ensureSeeded()
+  seededAt = Date.now()
+}
+
+async function cleanupThrottled() {
+  if (Date.now() - cleanedAt < MAINTENANCE_MS) return
+  cleanedAt = Date.now()
+  await cleanupExpired()
+}
+
+const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
+const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
 
 async function ensureSeeded() {
   await db.insert(content).values(Object.entries(defaultContent).map(([key, value]) => ({ key, value }))).onConflictDoNothing()
@@ -208,8 +282,13 @@ async function findOrCreateCustomer(data: { name: string; email?: string; phone:
 export const login = createServerFn({ method: 'POST' })
   .inputValidator((data: { password: string }) => data)
   .handler(async ({ data }) => {
-    const ok = await verifyPassword(data.password)
-    if (!ok) throw new Error('Contraseña incorrecta.')
+    const ok = await verifyPassword(String(data.password ?? ''))
+    if (!ok) {
+      // Pequeña espera en cada intento fallido: hace muy lento probar
+      // contraseñas al azar (fuerza bruta) sin molestar al usarlo normal.
+      await new Promise((resolve) => setTimeout(resolve, 1200))
+      throw new Error('Contraseña incorrecta.')
+    }
     await createSession()
     return true
   })
@@ -227,7 +306,7 @@ export const checkSession = createServerFn({ method: 'GET' }).handler(async () =
 // TIENDA PÚBLICA
 // ───────────────────────────────────────────────────────────────────────
 export const getStorefront = createServerFn({ method: 'GET' }).handler(async () => {
-  await ensureSeeded()
+  await ensureSeededThrottled()
   const [productRows, contentRows] = await Promise.all([
     db.select().from(products).where(and(eq(products.active, true), isNull(products.deletedAt))).orderBy(desc(products.featured), products.id),
     db.select().from(content),
@@ -238,12 +317,22 @@ export const getStorefront = createServerFn({ method: 'GET' }).handler(async () 
 export const createOrder = createServerFn({ method: 'POST' })
   .inputValidator((data: { name: string; phone: string; email: string; address: string; items: CartLine[] }) => data)
   .handler(async ({ data }) => {
-    if (!data.name || !data.phone || !data.items.length) throw new Error('Completa todos los datos del pedido.')
-    const productRows = await db.select().from(products).where(and(inArray(products.id, data.items.map((item) => item.productId)), isNull(products.deletedAt)))
+    if (!data.name?.trim() || !data.phone?.trim() || !Array.isArray(data.items) || !data.items.length) throw new Error('Completa todos los datos del pedido.')
+    // Las cantidades vienen del navegador del cliente: se validan aquí para
+    // que nadie pueda mandar cantidades negativas o con decimales (eso
+    // sumaría stock falso y daría totales negativos).
     for (const item of data.items) {
-      const product = productRows.find((row) => row.id === item.productId)
-      if (!product) throw new Error(`El producto ${item.name} ya no está disponible.`)
-      if (product.stock < item.quantity) throw new Error(`Stock insuficiente para ${item.name}.`)
+      if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999) throw new Error('Hay una cantidad inválida en el carrito.')
+    }
+    const productRows = await db.select().from(products).where(and(inArray(products.id, data.items.map((item) => item.productId)), isNull(products.deletedAt), eq(products.active, true)))
+    // Un mismo producto puede venir en varias líneas (una por color), así
+    // que el stock se revisa contra el TOTAL de unidades de ese producto.
+    const requested = unitsByProduct(data.items.map((item) => ({ id: item.productId, quantity: item.quantity })))
+    for (const [productId, quantity] of requested) {
+      const product = productRows.find((row) => row.id === productId)
+      const label = data.items.find((item) => item.productId === productId)?.name || 'un producto'
+      if (!product) throw new Error(`El producto ${label} ya no está disponible.`)
+      if (product.stock < quantity) throw new Error(`Stock insuficiente para ${product.name} (quedan ${product.stock}).`)
     }
 
     // El driver HTTP de Neon no soporta transacciones interactivas, así que
@@ -253,7 +342,10 @@ export const createOrder = createServerFn({ method: 'POST' })
     for (const item of data.items) {
       const product = productRows.find((row) => row.id === item.productId)!
       const batchCost = await consumeFifoCost(product.id, item.quantity)
-      calculated.push({ id: product.id, name: item.name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
+      // El nombre solo se acepta si es el del producto (+ la opción elegida);
+      // el precio siempre sale de la base de datos, nunca del navegador.
+      const name = typeof item.name === 'string' && item.name.startsWith(product.name) ? item.name.slice(0, 200) : product.name
+      calculated.push({ id: product.id, name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -276,8 +368,8 @@ export const createOrder = createServerFn({ method: 'POST' })
 // ───────────────────────────────────────────────────────────────────────
 export const getAdminData = createServerFn({ method: 'GET' }).handler(async () => {
   await requireAdmin()
-  await ensureSeeded()
-  await cleanupExpired()
+  await ensureSeededThrottled()
+  await cleanupThrottled()
   const [productRows, orderRows, customerRows, contentRows, purchaseRows, expenseRows, trashedProducts, trashedOrders, trashedCustomers, trashedImages] = await Promise.all([
     db.select().from(products).where(isNull(products.deletedAt)).orderBy(desc(products.createdAt)),
     db.select().from(orders).where(isNull(orders.deletedAt)).orderBy(desc(orders.createdAt)),
@@ -361,7 +453,30 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
   .inputValidator((data: { id: number; status: string; paymentStatus: string; notes?: string }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
-    await db.update(orders).set({ status: data.status, paymentStatus: data.paymentStatus, ...(data.notes !== undefined ? { notes: data.notes } : {}) }).where(eq(orders.id, data.id))
+    if (!ORDER_STATUSES.includes(data.status) || !PAYMENT_STATUSES.includes(data.paymentStatus)) throw new Error('Estado inválido.')
+    const [order] = await db.select().from(orders).where(eq(orders.id, data.id)).limit(1)
+    if (!order) throw new Error('Ese pedido ya no existe.')
+    const wasCancelled = order.status === 'Cancelado'
+    const willBeCancelled = data.status === 'Cancelado'
+    let items = order.items
+    // Cancelar un pedido devuelve sus unidades al inventario (el cliente no
+    // se lo llevó). Quitarle el "Cancelado" las vuelve a sacar — si todavía
+    // hay stock suficiente; si no, avisa y no cambia nada.
+    if (!wasCancelled && willBeCancelled) {
+      for (const [productId, quantity] of unitsByProduct(order.items)) await returnToFifo(productId, quantity)
+    } else if (wasCancelled && !willBeCancelled) {
+      const needed = unitsByProduct(order.items)
+      const rows = await db.select({ id: products.id, name: products.name, stock: products.stock }).from(products).where(inArray(products.id, [...needed.keys()]))
+      for (const [productId, quantity] of needed) {
+        const row = rows.find((item) => item.id === productId)
+        if (!row) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
+        if (row.stock < quantity) throw new Error(`No hay stock suficiente de ${row.name} para reactivar el pedido (quedan ${row.stock}).`)
+      }
+      const costs = new Map<number, number>()
+      for (const [productId, quantity] of needed) costs.set(productId, (await takeStock(productId, quantity, rows.find((row) => row.id === productId)?.name ?? 'un producto')) / quantity)
+      items = order.items.map((item) => ({ ...item, cost: Math.round(costs.get(item.id) ?? item.cost) }))
+    }
+    await db.update(orders).set({ status: data.status, paymentStatus: data.paymentStatus, items, ...(data.notes !== undefined ? { notes: data.notes } : {}) }).where(eq(orders.id, data.id))
     return true
   })
 
@@ -372,7 +487,28 @@ export const updateOrder = createServerFn({ method: 'POST' })
     const customerName = data.customerName.trim()
     if (!customerName) throw new Error('El nombre del cliente es obligatorio.')
     if (!data.items.length) throw new Error('El pedido debe tener al menos un producto.')
-    const items = data.items.map((item) => ({ ...item, price: Math.max(0, Math.round(item.price)), quantity: Math.max(1, Math.round(item.quantity)) }))
+    const items = data.items.map((item) => ({ ...item, name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(item.price)), quantity: Math.max(1, Math.round(item.quantity)) }))
+    const [previous] = await db.select().from(orders).where(eq(orders.id, data.id)).limit(1)
+    if (!previous) throw new Error('Ese pedido ya no existe.')
+    // Si cambió la cantidad de algún producto (o se quitó uno), el
+    // inventario se ajusta solo: menos unidades = vuelven al stock; más
+    // unidades = se sacan del stock. Un pedido cancelado no toca el stock.
+    if (previous.status !== 'Cancelado') {
+      const before = unitsByProduct(previous.items)
+      const after = unitsByProduct(items)
+      const ids = new Set([...before.keys(), ...after.keys()])
+      const rows = await db.select({ id: products.id, name: products.name, stock: products.stock }).from(products).where(inArray(products.id, [...ids]))
+      for (const id of ids) {
+        const extra = (after.get(id) ?? 0) - (before.get(id) ?? 0)
+        const row = rows.find((item) => item.id === id)
+        if (extra > 0 && row && row.stock < extra) throw new Error(`No hay stock suficiente de ${row.name} para subir la cantidad (quedan ${row.stock}).`)
+      }
+      for (const id of ids) {
+        const extra = (after.get(id) ?? 0) - (before.get(id) ?? 0)
+        if (extra < 0) await returnToFifo(id, -extra)
+        else if (extra > 0 && rows.some((item) => item.id === id)) await takeStock(id, extra, rows.find((item) => item.id === id)?.name ?? 'un producto')
+      }
+    }
     const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     // El descuento nunca puede ser negativo ni superar el subtotal, para
     // que el total del pedido jamás quede en números rojos.
@@ -405,7 +541,12 @@ export const purgeOrder = createServerFn({ method: 'POST' }).inputValidator((id:
 // ───────────────────────────────────────────────────────────────────────
 export const saveContent = createServerFn({ method: 'POST' }).inputValidator((data: Record<string, string>) => data).handler(async ({ data }) => {
   await requireAdmin()
-  for (const [key, value] of Object.entries(data)) await db.insert(content).values({ key, value }).onConflictDoUpdate({ target: content.key, set: { value } })
+  // Todo en UNA sola consulta (antes era una consulta por cada campo,
+  // ~40 viajes a Neon uno tras otro: por eso "Guardar" tardaba tanto).
+  const rows = Object.entries(data || {})
+    .filter(([key]) => typeof key === 'string' && key.length > 0 && key.length <= 64)
+    .map(([key, value]) => ({ key, value: String(value ?? '') }))
+  if (rows.length) await db.insert(content).values(rows).onConflictDoUpdate({ target: content.key, set: { value: sql`excluded.value` } })
   return true
 })
 
@@ -450,17 +591,16 @@ export const purgeCustomer = createServerFn({ method: 'POST' }).inputValidator((
 // ───────────────────────────────────────────────────────────────────────
 
 // Registra una compra/reposición de inventario: suma el stock del
-// producto y recalcula su costo promedio ponderado. Es un libro de solo
-// lectura una vez creado — no hay editar/borrar, así el historial de
-// costos nunca queda inconsistente (si hay un error, se registra otra
-// compra que lo ajuste).
+// producto y crea un lote nuevo (las ventas consumen primero el lote más
+// viejo — FIFO). Si se registró mal, se puede borrar (ver deletePurchase).
 export const recordPurchase = createServerFn({ method: 'POST' })
   .inputValidator((data: { productId: number; quantity: number; unitCost: number; notes: string }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
-    const quantity = Math.round(data.quantity)
-    const unitCost = Math.max(0, Math.round(data.unitCost))
-    if (quantity <= 0) throw new Error('La cantidad debe ser mayor a 0.')
+    const quantity = Math.round(Number(data.quantity))
+    const unitCost = Math.max(0, Math.round(Number(data.unitCost)))
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('La cantidad debe ser mayor a 0.')
+    if (!Number.isFinite(unitCost)) throw new Error('El costo no es válido.')
     const [product] = await db.select().from(products).where(eq(products.id, data.productId)).limit(1)
     if (!product) throw new Error('Ese producto ya no existe.')
 
@@ -484,14 +624,21 @@ export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator(
   await requireAdmin()
   const [purchase] = await db.select().from(purchases).where(eq(purchases.id, data)).limit(1)
   if (!purchase) throw new Error('Esa compra ya no existe.')
-  await db.delete(purchases).where(eq(purchases.id, data))
+  if (purchase.remainingQuantity <= 0) throw new Error('Ese lote ya se vendió completo: no queda nada que quitar.')
+  const sold = purchase.quantity - purchase.remainingQuantity
+  if (sold > 0) {
+    // Ya se vendieron unidades de este lote: esas ventas guardaron este
+    // costo, así que el lote no se puede borrar entero sin descuadrar las
+    // Finanzas (el Capital disponible subiría de más). En vez de borrarlo,
+    // se reduce a lo que ya se vendió y solo se quita lo que queda.
+    await db.update(purchases).set({ quantity: sold, remainingQuantity: 0, totalCost: sold * purchase.unitCost, notes: `${purchase.notes ? `${purchase.notes} · ` : ''}ajustada: se quitaron ${purchase.remainingQuantity} sin vender` }).where(eq(purchases.id, data))
+  } else {
+    await db.delete(purchases).where(eq(purchases.id, data))
+  }
   const [product] = await db.select().from(products).where(eq(products.id, purchase.productId)).limit(1)
   if (product) {
-    const newStock = Math.max(0, product.stock - purchase.remainingQuantity)
-    const [nextBatch] = await db.select({ unitCost: purchases.unitCost }).from(purchases)
-      .where(and(eq(purchases.productId, purchase.productId), gt(purchases.remainingQuantity, 0)))
-      .orderBy(purchases.createdAt, purchases.id).limit(1)
-    await db.update(products).set({ stock: newStock, cost: nextBatch ? nextBatch.unitCost : product.cost }).where(eq(products.id, purchase.productId))
+    await db.update(products).set({ stock: Math.max(0, product.stock - purchase.remainingQuantity) }).where(eq(products.id, purchase.productId))
+    await syncCurrentCost(purchase.productId)
   }
   return true
 })

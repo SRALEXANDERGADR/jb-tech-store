@@ -14,8 +14,21 @@ async function sign(payload: string) {
   return toHex(signature)
 }
 
+// Compara la contraseña en tiempo constante (comparando los hash
+// SHA-256 byte por byte), para que no se pueda adivinar letra por letra
+// midiendo cuánto tarda la respuesta.
 export async function verifyPassword(password: string) {
-  return password.length > 0 && password === env.ADMIN_PASSWORD
+  if (!password || !env.ADMIN_PASSWORD) return false
+  const encoder = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(password)),
+    crypto.subtle.digest('SHA-256', encoder.encode(env.ADMIN_PASSWORD)),
+  ])
+  const x = new Uint8Array(a)
+  const y = new Uint8Array(b)
+  let diff = 0
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i]
+  return diff === 0
 }
 
 export async function createSession() {
