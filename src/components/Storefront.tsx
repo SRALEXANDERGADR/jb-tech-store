@@ -133,6 +133,30 @@ function categoryIcon(name: string) {
   return CATEGORY_ICONS[name] || LayoutGrid
 }
 
+/** Arma el enlace de una red social a partir de lo que se escribió en el
+ * panel: si ya es un enlace completo se usa tal cual; si es un usuario
+ * (@jb_tech.store) se arma la URL; si tiene espacios (ej. "JB TECH STORE",
+ * que no es un usuario válido) se abre la búsqueda para no dar un enlace roto. */
+function socialUrl(network: 'instagram' | 'facebook', raw: string) {
+  const value = (raw || '').trim()
+  if (/^https?:\/\//i.test(value)) return value
+  const handle = value.replace(/^@/, '')
+  if (!handle) return network === 'instagram' ? 'https://instagram.com' : 'https://facebook.com'
+  if (/\s/.test(handle)) return network === 'instagram' ? `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(handle)}` : `https://www.facebook.com/search/top?q=${encodeURIComponent(handle)}`
+  return network === 'instagram' ? `https://instagram.com/${encodeURIComponent(handle)}` : `https://facebook.com/${encodeURIComponent(handle)}`
+}
+
+/** El saludo de bienvenida (voz o audio) se reproduce solo una vez al día
+ * por visitante, no en cada visita: a un cliente que entra varias veces a
+ * ver productos le molestaría escucharlo siempre. */
+const WELCOME_KEY = 'jb-welcome-played'
+function welcomeAlreadyPlayedToday() {
+  try { return localStorage.getItem(WELCOME_KEY) === new Date().toDateString() } catch { return false }
+}
+function markWelcomePlayed() {
+  try { localStorage.setItem(WELCOME_KEY, new Date().toDateString()) } catch { /* sin almacenamiento: no pasa nada */ }
+}
+
 /** Glifo oficial de WhatsApp (mismo trazo que usa ShareButton), para que
  * el botón de WhatsApp de la tienda se reconozca al instante. */
 const WhatsAppIcon = ({ size = 18 }: { size?: number }) => (
@@ -519,6 +543,7 @@ function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
   useEffect(() => {
     if (!text.trim()) return
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    if (welcomeAlreadyPlayedToday()) return
 
     let unlocked = false
     let cancelled = false
@@ -555,6 +580,7 @@ function useWelcomeVoice(text: string, gender: 'hombre' | 'mujer') {
     const start = () => {
       if (unlocked) return
       unlocked = true
+      markWelcomePlayed()
       window.speechSynthesis.cancel()
       speakSegments(splitIntoVoiceSegments(text))
     }
@@ -592,6 +618,7 @@ function useWelcomeAudio(url: string) {
   useEffect(() => {
     if (!url) return
     if (typeof window === 'undefined') return
+    if (welcomeAlreadyPlayedToday()) return
 
     const audio = new Audio(url)
     audio.preload = 'auto'
@@ -611,6 +638,7 @@ function useWelcomeAudio(url: string) {
       if (unlocked) return
       audio.play().then(() => {
         unlocked = true
+        markWelcomePlayed()
         cleanup()
       }).catch(() => {
         // el navegador lo bloqueó; se reintenta con la próxima interacción
@@ -717,6 +745,37 @@ export function Storefront({ data }: Props) {
 
   const lineKey = (line: CartLine) => `${line.productId}::${line.name}`
 
+  // El carrito se guarda en el teléfono del cliente: si recarga la página
+  // o vuelve más tarde, sus productos siguen ahí. Al cargarlo se corrige
+  // contra el catálogo actual (precio al día, productos que ya no existen
+  // se quitan, cantidades que pasan el stock se ajustan).
+  const cartLoaded = useRef(false)
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('jb-cart') || '[]') as CartLine[]
+      if (Array.isArray(saved) && saved.length) {
+        const used = new Map<number, number>()
+        const fixed: CartLine[] = []
+        for (const line of saved) {
+          const product = products.find((item) => item.id === line.productId)
+          if (!product || product.stock <= 0 || typeof line.name !== 'string') continue
+          const room = product.stock - (used.get(product.id) ?? 0)
+          const quantity = Math.min(Math.max(1, Math.round(Number(line.quantity) || 1)), room)
+          if (quantity <= 0) continue
+          used.set(product.id, (used.get(product.id) ?? 0) + quantity)
+          fixed.push({ productId: product.id, name: line.name.startsWith(product.name) ? line.name : product.name, price: product.price, quantity, image: line.image || product.image })
+        }
+        setCart(fixed)
+      }
+    } catch { /* carrito guardado dañado o sin almacenamiento: se empieza vacío */ }
+    cartLoaded.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useEffect(() => {
+    if (!cartLoaded.current) return
+    try { localStorage.setItem('jb-cart', JSON.stringify(cart)) } catch { /* sin almacenamiento */ }
+  }, [cart])
+
   const changeQuantity = (key: string, delta: number) => setCart((current) => {
     const target = current.find((line) => lineKey(line) === key)
     if (!target) return current
@@ -738,7 +797,9 @@ export function Storefront({ data }: Props) {
     setError('')
     const form = new FormData(event.currentTarget)
     try {
-      const result = await createOrder({ data: { name: String(form.get('name')), phone: String(form.get('phone')), email: String(form.get('email')), address: String(form.get('address')), items: cart } })
+      const phoneDigits = String(form.get('phone') || '').replace(/\D/g, '')
+      if (phoneDigits.length < 10) throw new Error('Escribe un teléfono válido de 10 dígitos (ej. 809 555 1234).')
+      const result = await createOrder({ data: { name: String(form.get('name')), phone: String(form.get('phone')), email: String(form.get('email')), address: String(form.get('address')), website: String(form.get('website') || ''), items: cart } })
       setConfirmation({ orderNumber: result.orderNumber, total: result.total, items: [...cart] })
       setCart([])
     } catch (caught) {
@@ -907,8 +968,8 @@ export function Storefront({ data }: Props) {
           <BrandMark className="footer-mark" />
           <p>{copy.footerText}</p>
           <div className="footer-social">
-            <a href={`https://instagram.com/${(copy.instagram || '').replace('@', '')}`} target="_blank" rel="noreferrer" aria-label="Instagram"><Instagram size={17} /></a>
-            <a href={`https://facebook.com/${copy.facebook || ''}`} target="_blank" rel="noreferrer" aria-label="Facebook"><Facebook size={17} /></a>
+            <a href={socialUrl('instagram', copy.instagram)} target="_blank" rel="noreferrer" aria-label="Instagram"><Instagram size={17} /></a>
+            <a href={socialUrl('facebook', copy.facebook)} target="_blank" rel="noreferrer" aria-label="Facebook"><Facebook size={17} /></a>
             <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer" aria-label="WhatsApp"><WhatsAppIcon size={17} /></a>
           </div>
         </div>
@@ -986,10 +1047,13 @@ export function Storefront({ data }: Props) {
           <h2>{copy.checkoutTitle}</h2>
           <p>Déjanos tus datos para coordinar pago y entrega.</p>
           <form id="checkout-form" onSubmit={submitOrder}>
-            <input required name="name" placeholder="Nombre completo" />
-            <input required name="phone" placeholder="Teléfono / WhatsApp" />
+            <input required name="name" autoComplete="name" maxLength={80} placeholder="Nombre completo" />
+            <input required name="phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono / WhatsApp (ej. 809 555 1234)" />
+            {/* Campo trampa invisible: las personas no lo ven ni lo llenan; los
+                robots que llenan todos los campos sí, y ese pedido se ignora. */}
+            <input name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="hp-field" />
             <input name="email" type="email" placeholder="Correo electrónico (opcional)" />
-            <textarea required name="address" placeholder="Dirección de entrega" rows={3} />
+            <textarea required name="address" autoComplete="street-address" maxLength={300} placeholder="Dirección de entrega (sector, calle, referencia)" rows={3} />
             {error && <p className="form-error">{error}</p>}
           </form>
         </div>

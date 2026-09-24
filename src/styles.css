@@ -193,6 +193,7 @@ main { max-width: var(--max-width); width: 100%; margin: 0 auto; padding: 0 16px
 .cat-chip.active .cat-chip-label { color: var(--ink); font-weight: 700; }
 @media (hover: hover) { .cat-chip:hover .cat-chip-icon { border-color: rgba(147,197,253,.45); } }
 .catalog { scroll-margin-top: 64px; }
+.hp-field { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; opacity: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 /* ─── Pestañas de ofertas ─── */
@@ -633,6 +634,8 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .receipt-footer { margin-top: 22px; color: #64748b; font-size: 11.5px; line-height: 1.6; text-align: center; }
 
 /* ─── Páginas legales ─── */
+.status-page { min-height: 70vh; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 14px; }
+.status-page h1 { color: var(--white); font-size: 24px; }
 .legal-page { max-width: 720px; margin: 0 auto; padding: 32px 20px 80px; color: var(--ink-dim); }
 .legal-back { display: inline-flex; align-items: center; gap: 6px; color: var(--blue-400); font-weight: 700; font-size: 13.5px; margin-bottom: 20px; }
 .legal-page h1 { color: var(--white); font-size: 26px; }

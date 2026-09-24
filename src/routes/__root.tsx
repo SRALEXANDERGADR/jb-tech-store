@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { HeadContent, Link, Scripts, createRootRoute } from '@tanstack/react-router'
 
 import '../styles.css'
 
@@ -32,6 +32,14 @@ export const Route = createRootRoute({
         property: 'og:type',
         content: 'website',
       },
+      // Imagen y enlace que salen cuando se comparte la tienda por WhatsApp,
+      // Facebook, etc. Si algún día se cambia a un dominio propio, cambiar
+      // también estas dos direcciones.
+      { property: 'og:url', content: 'https://jb-tech-store.gadrnet.workers.dev/' },
+      { property: 'og:image', content: 'https://jb-tech-store.gadrnet.workers.dev/favicon-512.png' },
+      { property: 'og:locale', content: 'es_DO' },
+      { property: 'og:site_name', content: 'JB Tech Store' },
+      { name: 'twitter:card', content: 'summary' },
       {
         name: 'theme-color',
         content: '#0b1220',
@@ -48,6 +56,23 @@ export const Route = createRootRoute({
     ],
   }),
   shellComponent: RootDocument,
+  // Página propia para enlaces que no existen (en vez del "Not Found" en
+  // blanco) y para cuando algo falla al cargar (ej. la base de datos no
+  // responde): el cliente ve un mensaje claro y un botón para volver.
+  notFoundComponent: () => (
+    <main className="legal-page status-page">
+      <h1>Esta página no existe</h1>
+      <p>Puede que el enlace esté mal escrito o que el producto ya no esté disponible.</p>
+      <Link to="/" className="primary-button">Ir a la tienda</Link>
+    </main>
+  ),
+  errorComponent: () => (
+    <main className="legal-page status-page">
+      <h1>No pudimos cargar la tienda</h1>
+      <p>Intenta de nuevo en unos segundos. Si sigue pasando, escríbenos por WhatsApp y te atendemos directo.</p>
+      <button type="button" className="primary-button" onClick={() => window.location.reload()}>Reintentar</button>
+    </main>
+  ),
 })
 
 function RootDocument({ children }: { children: ReactNode }) {

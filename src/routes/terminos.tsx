@@ -8,7 +8,7 @@ function Terminos() {
     <main className="legal-page">
       <Link to="/" className="legal-back"><ArrowLeft size={16} /> Volver a la tienda</Link>
       <h1>Términos y condiciones</h1>
-      <p className="legal-updated">Última actualización: {new Date().toLocaleDateString('es-DO', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+      <p className="legal-updated">Última actualización: 24 de septiembre de 2026</p>
 
       <h2>Uso del sitio</h2>
       <p>Este sitio es operado por JB Tech Store. Al navegar y realizar pedidos a través de esta tienda, aceptas los presentes términos y condiciones.</p>

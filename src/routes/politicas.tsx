@@ -8,7 +8,7 @@ function Politicas() {
     <main className="legal-page">
       <Link to="/" className="legal-back"><ArrowLeft size={16} /> Volver a la tienda</Link>
       <h1>Políticas de la tienda</h1>
-      <p className="legal-updated">Última actualización: {new Date().toLocaleDateString('es-DO', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+      <p className="legal-updated">Última actualización: 24 de septiembre de 2026</p>
 
       <h2>Pedidos</h2>
       <p>Al confirmar un pedido en la tienda, este queda registrado como una solicitud de compra. Un miembro del equipo de JB Tech Store se pondrá en contacto por WhatsApp o teléfono para confirmar disponibilidad, coordinar el método de pago y la entrega.</p>

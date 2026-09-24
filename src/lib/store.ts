@@ -315,8 +315,13 @@ export const getStorefront = createServerFn({ method: 'GET' }).handler(async () 
 })
 
 export const createOrder = createServerFn({ method: 'POST' })
-  .inputValidator((data: { name: string; phone: string; email: string; address: string; items: CartLine[] }) => data)
+  .inputValidator((data: { name: string; phone: string; email: string; address: string; website?: string; items: CartLine[] }) => data)
   .handler(async ({ data }) => {
+    // Campo trampa: si viene lleno, lo mandó un robot. Se responde como si
+    // todo hubiera salido bien, pero no se guarda nada ni se toca el stock.
+    if (data.website) return { orderNumber: makeFolio('PED'), total: 0, orderId: 0 }
+    if ((data.phone || '').replace(/\D/g, '').length < 10) throw new Error('Escribe un teléfono válido de 10 dígitos.')
+    data = { ...data, name: String(data.name || '').trim().slice(0, 80), phone: String(data.phone || '').trim().slice(0, 30), email: String(data.email || '').trim().slice(0, 120), address: String(data.address || '').trim().slice(0, 300) }
     if (!data.name?.trim() || !data.phone?.trim() || !Array.isArray(data.items) || !data.items.length) throw new Error('Completa todos los datos del pedido.')
     // Las cantidades vienen del navegador del cliente: se validan aquí para
     // que nadie pueda mandar cantidades negativas o con decimales (eso
