@@ -1,18 +1,22 @@
 import { createServerFn } from '@tanstack/react-start'
 import { env } from 'cloudflare:workers'
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { content, customers, expenses, imageTrash, orders, products, purchases } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail } from './email'
 import { deleteImageFile, pathFromDownloadUrl } from './github'
+import { lineName, normalizeVariants, optionPrice, optionStock, parseOptions, resolveOption, tracksOptionStock } from './variants'
+import type { ProductVariant } from './variants'
 
 // Días que un elemento permanece en papelera (productos, clientes, pedidos
 // e imágenes) antes de eliminarse definitivamente.
 const TRASH_DAYS = 30
 const TRASH_MS = TRASH_DAYS * 24 * 60 * 60 * 1000
 
-export type CartLine = { productId: number; name: string; price: number; quantity: number; image: string }
+export type CartLine = { productId: number; name: string; price: number; quantity: number; image: string; option?: string }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string }
+type ProductRow = typeof products.$inferSelect
 
 export const CATEGORIES = ['Teléfonos', 'Laptops', 'Accesorios', 'Cargadores y Cables', 'Covers y Protectores', 'Audífonos y Bocinas', 'Relojes Inteligentes', 'Gaming', 'Otros']
 
@@ -104,20 +108,77 @@ function makeFolio(prefix: string) {
   return `${prefix}-${fecha}-${rand}`
 }
 
-/** Nuevo costo promedio ponderado (centavos) al sumar `addQty` unidades
- * compradas a `addUnitCost` c/u, a un producto con `prevStock` unidades
- * que ya costaban `prevCost` c/u. Si no había stock previo (producto
- * nuevo o agotado), el promedio es simplemente el costo de esta compra. */
+// ───────────────────────────────────────────────────────────────────────
+// ESQUEMA — las columnas nuevas (cantidad por opción y opción de cada
+// lote) se crean solas la primera vez que arranca el Worker, así que no
+// hace falta correr ninguna migración a mano en Neon. Si ya existen, solo
+// se hace una consulta rápida de lectura (una vez por instancia).
+// ───────────────────────────────────────────────────────────────────────
+let schemaReady: Promise<void> | null = null
+function ensureSchema(): Promise<void> {
+  if (!schemaReady) {
+    schemaReady = (async () => {
+      const result = await db.execute(sql`select count(*)::int as n from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name = 'option'))`)
+      const rows = ((result as unknown as { rows?: Array<{ n: number }> }).rows ?? (result as unknown as Array<{ n: number }>)) || []
+      if (Number(rows[0]?.n ?? 0) >= 2) return
+      await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
+      await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
+    })().catch((error) => {
+      schemaReady = null // se reintenta en la próxima petición
+      throw error
+    })
+  }
+  return schemaReady
+}
+
+async function loadProduct(productId: number): Promise<ProductRow | undefined> {
+  const [product] = await db.select().from(products).where(eq(products.id, productId)).limit(1)
+  return product
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// INVENTARIO Y LOTES (FIFO)
+//
+// Cada compra registrada es un "lote" con su propio costo. Al vender, se
+// saca primero del lote más viejo que todavía tenga unidades (FIFO: el
+// primero que entra es el primero que sale). Si el producto lleva cantidad
+// por opción, una venta de "negro/amarillo" solo sale de los lotes de esa
+// opción o de los lotes generales (sin opción, ej. compras de antes de
+// separar por opción) — nunca del lote de otra opción.
+// ───────────────────────────────────────────────────────────────────────
+
+/** Lotes de los que puede salir (o a los que puede volver) una unidad de
+ * esa opción. */
+function lotsFor(product: ProductRow, option: string) {
+  if (tracksOptionStock(product) && option) {
+    return and(eq(purchases.productId, product.id), or(eq(purchases.option, option), eq(purchases.option, '')))
+  }
+  return eq(purchases.productId, product.id)
+}
+
+/** Costo a usar si se vende algo que no tiene lote registrado detrás (ej.
+ * stock que ya existía antes de activar Finanzas): el último costo
+ * conocido de esa opción o, si no hay, el costo actual del producto. */
+async function fallbackCost(product: ProductRow, option: string): Promise<number> {
+  if (tracksOptionStock(product) && option) {
+    const [last] = await db.select({ unitCost: purchases.unitCost }).from(purchases)
+      .where(and(eq(purchases.productId, product.id), eq(purchases.option, option)))
+      .orderBy(desc(purchases.createdAt), desc(purchases.id)).limit(1)
+    if (last) return last.unitCost
+  }
+  return product.cost
+}
+
 // Consume del lote más viejo primero (FIFO) para vender `quantity`
-// unidades de un producto, y devuelve el costo total (centavos) de esa
-// cantidad. Si no hay suficiente cantidad registrada en `purchases` (ej.
-// stock que ya existía antes de activar Finanzas y nunca se registró como
-// compra), usa el costo actual del producto para lo que falte, para no
-// bloquear la venta.
-async function consumeFifoCost(productId: number, quantity: number): Promise<number> {
+// unidades y devuelve el costo total (centavos) de esa cantidad. Si no hay
+// suficiente cantidad registrada en lotes, usa fallbackCost para lo que
+// falte, para no bloquear la venta.
+async function consumeFifoCost(product: ProductRow, option: string, quantity: number): Promise<number> {
   let remaining = quantity
   let totalCost = 0
-  const batches = await db.select().from(purchases).where(and(eq(purchases.productId, productId), gt(purchases.remainingQuantity, 0))).orderBy(purchases.createdAt, purchases.id)
+  const batches = await db.select().from(purchases)
+    .where(and(lotsFor(product, option), gt(purchases.remainingQuantity, 0)))
+    .orderBy(purchases.createdAt, purchases.id)
   for (const batch of batches) {
     if (remaining <= 0) break
     const take = Math.min(remaining, batch.remainingQuantity)
@@ -125,27 +186,20 @@ async function consumeFifoCost(productId: number, quantity: number): Promise<num
     remaining -= take
     await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity - take }).where(eq(purchases.id, batch.id))
   }
-  if (remaining > 0) {
-    const [product] = await db.select({ cost: products.cost }).from(products).where(eq(products.id, productId)).limit(1)
-    totalCost += remaining * (product?.cost ?? 0)
-  }
+  if (remaining > 0) totalCost += remaining * (await fallbackCost(product, option))
   // El "costo actual" mostrado del producto pasa a ser el del próximo lote
   // disponible (el siguiente que se va a consumir), no un promedio.
-  await syncCurrentCost(productId)
+  await syncCurrentCost(product.id)
   return totalCost
 }
 
-/** Devuelve `quantity` unidades al inventario (pedido cancelado o
- * editado a menos unidades). Las unidades vuelven a los lotes de compra de
- * los que salieron: primero al lote más reciente que ya se había empezado
- * a vender, luego a los anteriores — el reverso exacto de consumeFifoCost. */
-async function returnToFifo(productId: number, quantity: number) {
-  if (quantity <= 0) return
-  const [product] = await db.select({ id: products.id }).from(products).where(eq(products.id, productId)).limit(1)
-  if (!product) return // el producto se eliminó definitivamente: no hay a dónde devolver
+/** Devuelve unidades a los lotes de los que salieron (pedido cancelado o
+ * editado a menos unidades): primero al lote más reciente que ya se había
+ * empezado a vender, luego a los anteriores — el reverso de consumeFifoCost. */
+async function returnToFifo(product: ProductRow, option: string, quantity: number) {
   let remaining = quantity
   const batches = await db.select().from(purchases)
-    .where(and(eq(purchases.productId, productId), lt(purchases.remainingQuantity, purchases.quantity)))
+    .where(and(lotsFor(product, option), lt(purchases.remainingQuantity, purchases.quantity)))
     .orderBy(desc(purchases.createdAt), desc(purchases.id))
   for (const batch of batches) {
     if (remaining <= 0) break
@@ -154,20 +208,49 @@ async function returnToFifo(productId: number, quantity: number) {
     await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity + put }).where(eq(purchases.id, batch.id))
     remaining -= put
   }
-  await db.update(products).set({ stock: sql`${products.stock} + ${quantity}` }).where(eq(products.id, productId))
-  await syncCurrentCost(productId)
+}
+
+/** Suma (delta > 0) o resta (delta < 0) unidades al inventario. Si el
+ * producto lleva cantidad por opción, cambia la de esa opción y el total
+ * del producto se recalcula como la suma de todas. */
+async function changeStock(productId: number, option: string, delta: number) {
+  if (!delta) return
+  const product = await loadProduct(productId)
+  if (!product) return
+  if (tracksOptionStock(product)) {
+    // Una opción que ya no existe (se borró del producto) no tiene dónde
+    // guardar unidades: se ignora.
+    if (!option || !parseOptions(product.options).includes(option)) return
+    const variants = normalizeVariants(product).map((entry) => (entry.option === option ? { ...entry, stock: Math.max(0, (entry.stock ?? 0) + delta) } : entry))
+    const total = variants.reduce((sum, entry) => sum + (entry.stock ?? 0), 0)
+    await db.update(products).set({ variantImages: variants, stock: total }).where(eq(products.id, productId))
+    return
+  }
+  await db.update(products).set({ stock: sql`greatest(0, ${products.stock} + ${delta})` }).where(eq(products.id, productId))
 }
 
 /** Saca `quantity` unidades del inventario (FIFO) y devuelve su costo
- * total. Falla con un mensaje claro si no hay suficiente stock. */
-async function takeStock(productId: number, quantity: number, label: string): Promise<number> {
+ * total. Falla con un mensaje claro si no hay suficientes. */
+async function takeStock(productId: number, option: string, quantity: number, label: string): Promise<number> {
   if (quantity <= 0) return 0
-  const [product] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, productId)).limit(1)
+  const product = await loadProduct(productId)
   if (!product) throw new Error(`El producto ${label} ya no existe.`)
-  if (product.stock < quantity) throw new Error(`Stock insuficiente para ${label} (quedan ${product.stock}).`)
-  const cost = await consumeFifoCost(productId, quantity)
-  await db.update(products).set({ stock: sql`${products.stock} - ${quantity}` }).where(eq(products.id, productId))
+  if (tracksOptionStock(product) && !option) throw new Error(`Elige la opción (color/diseño) de ${product.name}.`)
+  const available = optionStock(product, option)
+  if (available < quantity) throw new Error(`No hay suficientes unidades de ${label} (quedan ${available}).`)
+  const cost = await consumeFifoCost(product, option, quantity)
+  await changeStock(productId, option, -quantity)
   return cost
+}
+
+/** Devuelve `quantity` unidades al inventario y a sus lotes. */
+async function returnStock(productId: number, option: string, quantity: number) {
+  if (quantity <= 0) return
+  const product = await loadProduct(productId)
+  if (!product) return // el producto se eliminó definitivamente: no hay a dónde devolver
+  await returnToFifo(product, option, quantity)
+  await changeStock(productId, option, quantity)
+  await syncCurrentCost(productId)
 }
 
 /** El "costo actual" del producto es el del próximo lote que se va a
@@ -179,12 +262,33 @@ async function syncCurrentCost(productId: number) {
   if (nextBatch) await db.update(products).set({ cost: nextBatch.unitCost }).where(eq(products.id, productId))
 }
 
-/** Suma las unidades por producto (un mismo producto puede venir en
- * varias líneas, una por color/opción). */
-function unitsByProduct(items: Array<{ id: number; quantity: number }>) {
-  const map = new Map<number, number>()
-  for (const item of items) map.set(item.id, (map.get(item.id) ?? 0) + item.quantity)
-  return map
+/** Revisa, ANTES de tocar nada, que alcance el inventario para todas las
+ * líneas juntas. Suma por "cajón": el producto entero, o cada opción por
+ * separado si el producto lleva cantidad por opción (dos líneas del mismo
+ * producto sin cantidad por opción comparten el mismo cajón). */
+function checkAvailability(lines: Array<{ productId: number; option: string; quantity: number }>, rows: ProductRow[]) {
+  const totals = new Map<string, { product: ProductRow; option: string; quantity: number }>()
+  for (const line of lines) {
+    if (line.quantity <= 0) continue
+    const product = rows.find((row) => row.id === line.productId)
+    if (!product) throw new Error('Uno de los productos ya no existe.')
+    const tracking = tracksOptionStock(product)
+    if (tracking && !line.option) throw new Error(`Elige la opción (color/diseño) de ${product.name}.`)
+    const key = tracking ? `${product.id}::${line.option}` : `${product.id}`
+    const current = totals.get(key)
+    totals.set(key, { product, option: tracking ? line.option : '', quantity: (current?.quantity ?? 0) + line.quantity })
+  }
+  for (const { product, option, quantity } of totals.values()) {
+    const available = optionStock(product, option)
+    if (available < quantity) throw new Error(`No hay suficientes unidades de ${lineName(product.name, option)} (quedan ${available}).`)
+  }
+}
+
+/** Opción de una línea de pedido: la guardada o, en pedidos viejos, la que
+ * viene en el nombre ("Producto — opción"). */
+function itemOption(rows: ProductRow[], item: { id: number; name: string; option?: string }) {
+  const product = rows.find((row) => row.id === item.id)
+  return product ? resolveOption(product, item.option, item.name) : String(item.option || '')
 }
 
 // Mantenimiento (textos por defecto + limpieza de papelera): antes se
@@ -219,6 +323,7 @@ async function ensureSeeded() {
 async function requireAdmin() {
   const ok = await verifySession()
   if (!ok) throw new Error('Debes iniciar sesión para continuar.')
+  await ensureSchema()
 }
 
 // Envía una imagen (por su download_url) a la papelera de imágenes. Si la
@@ -306,13 +411,23 @@ export const checkSession = createServerFn({ method: 'GET' }).handler(async () =
 // TIENDA PÚBLICA
 // ───────────────────────────────────────────────────────────────────────
 export const getStorefront = createServerFn({ method: 'GET' }).handler(async () => {
+  await ensureSchema()
   await ensureSeededThrottled()
   const [productRows, contentRows] = await Promise.all([
     db.select().from(products).where(and(eq(products.active, true), isNull(products.deletedAt))).orderBy(desc(products.featured), products.id),
     db.select().from(content),
   ])
-  return { products: productRows, content: Object.fromEntries(contentRows.map((item) => [item.key, item.value])) }
+  // El costo (lo que se pagó por cada producto) es solo para el panel: no
+  // se manda a la tienda pública, donde cualquiera podría verlo en el
+  // código de la página.
+  const publicProducts = productRows.map(({ cost: _cost, ...product }) => product)
+  const publicContent = Object.fromEntries(contentRows.filter((item) => !PRIVATE_CONTENT_KEYS.has(item.key)).map((item) => [item.key, item.value]))
+  return { products: publicProducts, content: publicContent }
 })
+
+// Configuración privada guardada en la tabla `content` que la tienda no
+// necesita (y que no debe verse en el código de la página).
+const PRIVATE_CONTENT_KEYS = new Set(['capitalInicial', 'reinvestPercent', 'notificationEmail'])
 
 export const createOrder = createServerFn({ method: 'POST' })
   .inputValidator((data: { name: string; phone: string; email: string; address: string; website?: string; items: CartLine[] }) => data)
@@ -329,28 +444,30 @@ export const createOrder = createServerFn({ method: 'POST' })
     for (const item of data.items) {
       if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999) throw new Error('Hay una cantidad inválida en el carrito.')
     }
+    await ensureSchema()
     const productRows = await db.select().from(products).where(and(inArray(products.id, data.items.map((item) => item.productId)), isNull(products.deletedAt), eq(products.active, true)))
-    // Un mismo producto puede venir en varias líneas (una por color), así
-    // que el stock se revisa contra el TOTAL de unidades de ese producto.
-    const requested = unitsByProduct(data.items.map((item) => ({ id: item.productId, quantity: item.quantity })))
-    for (const [productId, quantity] of requested) {
-      const product = productRows.find((row) => row.id === productId)
-      const label = data.items.find((item) => item.productId === productId)?.name || 'un producto'
-      if (!product) throw new Error(`El producto ${label} ya no está disponible.`)
-      if (product.stock < quantity) throw new Error(`Stock insuficiente para ${product.name} (quedan ${product.stock}).`)
-    }
+    // Cada línea se amarra a su producto y a su opción (color/diseño). El
+    // precio y el nombre siempre salen de la base de datos, nunca del
+    // navegador del cliente.
+    const lines = data.items.map((item) => {
+      const product = productRows.find((row) => row.id === item.productId)
+      if (!product) throw new Error(`El producto ${String(item.name || '').slice(0, 80) || 'que elegiste'} ya no está disponible.`)
+      const option = resolveOption(product, item.option, item.name)
+      if (parseOptions(product.options).length > 0 && !option) throw new Error(`Elige una opción (color/diseño) de ${product.name} antes de enviar el pedido.`)
+      return { product, productId: product.id, option, quantity: item.quantity }
+    })
+    // Un mismo producto puede venir en varias líneas (una por opción): se
+    // revisa todo junto antes de sacar nada del inventario.
+    checkAvailability(lines, productRows)
 
     // El driver HTTP de Neon no soporta transacciones interactivas, así que
     // estas operaciones (consumo FIFO + descuento de stock) se hacen en
     // secuencia en vez de dentro de una tx.
-    const calculated: Array<{ id: number; name: string; price: number; quantity: number; cost: number }> = []
-    for (const item of data.items) {
-      const product = productRows.find((row) => row.id === item.productId)!
-      const batchCost = await consumeFifoCost(product.id, item.quantity)
-      // El nombre solo se acepta si es el del producto (+ la opción elegida);
-      // el precio siempre sale de la base de datos, nunca del navegador.
-      const name = typeof item.name === 'string' && item.name.startsWith(product.name) ? item.name.slice(0, 200) : product.name
-      calculated.push({ id: product.id, name, price: product.price, quantity: item.quantity, cost: Math.round(batchCost / item.quantity) })
+    const calculated: OrderItem[] = []
+    for (const line of lines) {
+      const name = lineName(line.product.name, line.option)
+      const batchCost = await takeStock(line.productId, line.option, line.quantity, name)
+      calculated.push({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(batchCost / line.quantity), option: line.option })
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -358,7 +475,6 @@ export const createOrder = createServerFn({ method: 'POST' })
     const createdAt = new Date()
 
     const [order] = await db.insert(orders).values({ orderNumber, customerId: customer.id, customerName: data.name, email: data.email, phone: data.phone, address: data.address, items: calculated, total, createdAt }).returning()
-    for (const item of calculated) await db.update(products).set({ stock: sql`${products.stock} - ${item.quantity}` }).where(and(eq(products.id, item.id), sql`${products.stock} >= ${item.quantity}`))
 
     const [notificationRow] = await db.select().from(content).where(eq(content.key, 'notificationEmail')).limit(1)
     if (notificationRow?.value) {
@@ -402,19 +518,41 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
 // ADMIN — catálogo
 // ───────────────────────────────────────────────────────────────────────
 export const saveProduct = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
+  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; variantImages: ProductVariant[]; optionStock?: boolean; renames?: Array<{ from: string; to: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const name = data.name.trim()
     if (!name) throw new Error('El nombre del producto es obligatorio.')
-    // Solo se guardan entradas que de verdad coincidan con una opción
-    // vigente y que tengan al menos imagen o descripción — así, si luego
-    // se borra o se renombra una opción en el campo de arriba, su
-    // imagen/descripción huérfana no se queda guardada sin poder editarse.
-    const validOptions = new Set((data.options || '').split(',').map((item) => item.trim()).filter(Boolean))
-    const variantImages = (data.variantImages || []).filter((entry) => validOptions.has(entry.option) && (entry.image || entry.description))
-    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: (data.options || '').trim(), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock: Math.max(0, Math.round(data.stock)), image: data.image, variantImages, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
+    const optionNames = parseOptions(data.options)
+    const typedNames = String(data.options || '').split(',').map((item) => item.trim()).filter(Boolean)
+    if (typedNames.length !== optionNames.length) throw new Error('Hay dos opciones con el mismo nombre. Cámbiale el nombre a una de ellas.')
+    const isNew = !data.id
+    const trackOptions = Boolean(data.optionStock) && optionNames.length > 0
+    // Una entrada por cada opción vigente (foto, descripción, precio propio y
+    // cantidad). Lo de opciones que ya se borraron no se guarda. Un producto
+    // nuevo siempre empieza en 0: las unidades se suman con «Reponer», así
+    // queda registrado lo que costaron.
+    const variantImages: ProductVariant[] = optionNames.map((option) => {
+      const entry = (data.variantImages || []).find((item) => item.option === option)
+      return {
+        option,
+        image: String(entry?.image || ''),
+        description: String(entry?.description || '').trim(),
+        price: Math.max(0, Math.round(Number(entry?.price || 0))),
+        stock: isNew ? 0 : Math.max(0, Math.round(Number(entry?.stock || 0))),
+      }
+    })
+    const stock = isNew ? 0 : trackOptions ? variantImages.reduce((sum, entry) => sum + (entry.stock ?? 0), 0) : Math.max(0, Math.round(Number(data.stock) || 0))
+    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: optionNames.join(', '), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock, image: data.image, variantImages, optionStock: trackOptions, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
     if (data.id) {
+      // Si se le cambió el nombre a una opción, sus lotes de compra la siguen.
+      for (const rename of data.renames || []) {
+        const from = String(rename.from || '').trim()
+        const to = String(rename.to || '').trim()
+        if (from && to && from !== to && optionNames.includes(to) && !optionNames.includes(from)) {
+          await db.update(purchases).set({ option: to }).where(and(eq(purchases.productId, data.id), eq(purchases.option, from)))
+        }
+      }
       const [previous] = await db.select({ image: products.image, variantImages: products.variantImages }).from(products).where(eq(products.id, data.id)).limit(1)
       if (previous && previous.image && previous.image !== data.image) await trashImage(previous.image, 'Imagen reemplazada')
       const keptUrls = new Set(variantImages.map((entry) => entry.image).filter(Boolean))
@@ -468,50 +606,68 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
     // se lo llevó). Quitarle el "Cancelado" las vuelve a sacar — si todavía
     // hay stock suficiente; si no, avisa y no cambia nada.
     if (!wasCancelled && willBeCancelled) {
-      for (const [productId, quantity] of unitsByProduct(order.items)) await returnToFifo(productId, quantity)
+      const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
+      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity)
     } else if (wasCancelled && !willBeCancelled) {
-      const needed = unitsByProduct(order.items)
-      const rows = await db.select({ id: products.id, name: products.name, stock: products.stock }).from(products).where(inArray(products.id, [...needed.keys()]))
-      for (const [productId, quantity] of needed) {
-        const row = rows.find((item) => item.id === productId)
-        if (!row) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
-        if (row.stock < quantity) throw new Error(`No hay stock suficiente de ${row.name} para reactivar el pedido (quedan ${row.stock}).`)
+      const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
+      if (order.items.some((item) => !rows.some((row) => row.id === item.id))) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
+      const lines = order.items.map((item) => ({ productId: item.id, option: itemOption(rows, item), quantity: item.quantity }))
+      checkAvailability(lines, rows)
+      const next: OrderItem[] = []
+      for (const [index, item] of order.items.entries()) {
+        const option = lines[index].option
+        const cost = await takeStock(item.id, option, item.quantity, item.name)
+        next.push({ ...item, option, cost: Math.round(cost / Math.max(1, item.quantity)) })
       }
-      const costs = new Map<number, number>()
-      for (const [productId, quantity] of needed) costs.set(productId, (await takeStock(productId, quantity, rows.find((row) => row.id === productId)?.name ?? 'un producto')) / quantity)
-      items = order.items.map((item) => ({ ...item, cost: Math.round(costs.get(item.id) ?? item.cost) }))
+      items = next
     }
     await db.update(orders).set({ status: data.status, paymentStatus: data.paymentStatus, items, ...(data.notes !== undefined ? { notes: data.notes } : {}) }).where(eq(orders.id, data.id))
     return true
   })
 
 export const updateOrder = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: { id: number; name: string; price: number; quantity: number; cost: number }[]; discount?: number }) => data)
+  .inputValidator((data: { id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[]; discount?: number }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const customerName = data.customerName.trim()
     if (!customerName) throw new Error('El nombre del cliente es obligatorio.')
     if (!data.items.length) throw new Error('El pedido debe tener al menos un producto.')
-    const items = data.items.map((item) => ({ ...item, name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(item.price)), quantity: Math.max(1, Math.round(item.quantity)) }))
     const [previous] = await db.select().from(orders).where(eq(orders.id, data.id)).limit(1)
     if (!previous) throw new Error('Ese pedido ya no existe.')
+    const ids = [...new Set([...previous.items.map((item) => item.id), ...data.items.map((item) => Number(item.id))])]
+    const rows = await db.select().from(products).where(inArray(products.id, ids))
+    const items: OrderItem[] = data.items.map((item) => {
+      const clean = { id: Number(item.id), name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(Number(item.price) || 0)), quantity: Math.max(1, Math.round(Number(item.quantity) || 1)), cost: Math.max(0, Math.round(Number(item.cost) || 0)), option: String(item.option || '') }
+      return { ...clean, option: itemOption(rows, clean) }
+    })
     // Si cambió la cantidad de algún producto (o se quitó uno), el
-    // inventario se ajusta solo: menos unidades = vuelven al stock; más
-    // unidades = se sacan del stock. Un pedido cancelado no toca el stock.
+    // inventario se ajusta solo: menos unidades = vuelven al stock (y a su
+    // lote); más unidades = se sacan del stock. Se cuenta por producto Y por
+    // opción. Un pedido cancelado no toca el stock.
     if (previous.status !== 'Cancelado') {
-      const before = unitsByProduct(previous.items)
-      const after = unitsByProduct(items)
-      const ids = new Set([...before.keys(), ...after.keys()])
-      const rows = await db.select({ id: products.id, name: products.name, stock: products.stock }).from(products).where(inArray(products.id, [...ids]))
-      for (const id of ids) {
-        const extra = (after.get(id) ?? 0) - (before.get(id) ?? 0)
-        const row = rows.find((item) => item.id === id)
-        if (extra > 0 && row && row.stock < extra) throw new Error(`No hay stock suficiente de ${row.name} para subir la cantidad (quedan ${row.stock}).`)
+      const keyOf = (item: { id: number; option?: string }) => `${item.id}::${item.option || ''}`
+      const before = new Map<string, number>()
+      for (const item of previous.items) {
+        const key = keyOf({ id: item.id, option: itemOption(rows, item) })
+        before.set(key, (before.get(key) ?? 0) + item.quantity)
       }
-      for (const id of ids) {
-        const extra = (after.get(id) ?? 0) - (before.get(id) ?? 0)
-        if (extra < 0) await returnToFifo(id, -extra)
-        else if (extra > 0 && rows.some((item) => item.id === id)) await takeStock(id, extra, rows.find((item) => item.id === id)?.name ?? 'un producto')
+      const after = new Map<string, number>()
+      for (const item of items) after.set(keyOf(item), (after.get(keyOf(item)) ?? 0) + item.quantity)
+      const changes = [...new Set([...before.keys(), ...after.keys()])].map((key) => {
+        const [id, ...rest] = key.split('::')
+        return { key, productId: Number(id), option: rest.join('::'), extra: (after.get(key) ?? 0) - (before.get(key) ?? 0) }
+      })
+      const increases = changes.filter((change) => change.extra > 0 && rows.some((row) => row.id === change.productId))
+      checkAvailability(increases.map((change) => ({ productId: change.productId, option: change.option, quantity: change.extra })), rows)
+      for (const change of changes) {
+        if (change.extra < 0) await returnStock(change.productId, change.option, -change.extra)
+      }
+      for (const change of increases) {
+        const target = items.find((item) => keyOf(item) === change.key)
+        const extraCost = await takeStock(change.productId, change.option, change.extra, target?.name ?? 'un producto')
+        // El costo de la línea se vuelve el promedio entre lo que ya tenía y
+        // lo que costaron las unidades nuevas que se sacaron ahora.
+        if (target) target.cost = Math.round((target.cost * Math.max(0, target.quantity - change.extra) + extraCost) / target.quantity)
       }
     }
     const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
@@ -557,18 +713,24 @@ export const recordManualSale = createServerFn({ method: 'POST' })
       if (!Number.isFinite(line.quantity) || line.quantity < 1) throw new Error('La cantidad debe ser 1 o más.')
       if (!Number.isFinite(line.price)) throw new Error('El precio no es válido.')
     }
-    const needed = unitsByProduct(lines.map((line) => ({ id: line.productId, quantity: line.quantity })))
-    const rows = await db.select().from(products).where(inArray(products.id, [...needed.keys()]))
-    for (const [productId, quantity] of needed) {
-      const row = rows.find((item) => item.id === productId)
+    const rows = await db.select().from(products).where(inArray(products.id, [...new Set(lines.map((line) => line.productId))]))
+    for (const line of lines) {
+      const row = rows.find((item) => item.id === line.productId)
       if (!row) throw new Error('Uno de los productos ya no existe.')
-      if (row.stock < quantity) throw new Error(`No hay stock suficiente de ${row.name} (quedan ${row.stock}). Si tienes más unidades, regístralas primero con «Registrar compra».`)
+      line.option = resolveOption(row, line.option)
+      if (parseOptions(row.options).length > 0 && !line.option) throw new Error(`Elige la opción (color/diseño) de ${row.name}.`)
     }
-    const items: Array<{ id: number; name: string; price: number; quantity: number; cost: number }> = []
+    try {
+      checkAvailability(lines, rows)
+    } catch (caught) {
+      throw new Error(`${caught instanceof Error ? caught.message : 'No hay suficientes unidades.'} Si tienes más, regístralas primero con «Reponer».`)
+    }
+    const items: OrderItem[] = []
     for (const line of lines) {
       const row = rows.find((item) => item.id === line.productId)!
-      const cost = await takeStock(row.id, line.quantity, row.name)
-      items.push({ id: row.id, name: line.option ? `${row.name} — ${line.option}` : row.name, price: line.price, quantity: line.quantity, cost: Math.round(cost / line.quantity) })
+      const name = lineName(row.name, line.option)
+      const cost = await takeStock(row.id, line.option, line.quantity, name)
+      items.push({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(cost / line.quantity), option: line.option })
     }
     const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customerName = String(data.customerName || '').trim().slice(0, 80) || 'Venta en tienda'
@@ -641,25 +803,45 @@ export const purgeCustomer = createServerFn({ method: 'POST' }).inputValidator((
 // producto y crea un lote nuevo (las ventas consumen primero el lote más
 // viejo — FIFO). Si se registró mal, se puede borrar (ver deletePurchase).
 export const recordPurchase = createServerFn({ method: 'POST' })
-  .inputValidator((data: { productId: number; quantity: number; unitCost: number; notes: string }) => data)
+  .inputValidator((data: { productId: number; notes: string; lines: Array<{ option: string; quantity: number; unitCost: number }> }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
-    const quantity = Math.round(Number(data.quantity))
-    const unitCost = Math.max(0, Math.round(Number(data.unitCost)))
-    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('La cantidad debe ser mayor a 0.')
-    if (!Number.isFinite(unitCost)) throw new Error('El costo no es válido.')
-    const [product] = await db.select().from(products).where(eq(products.id, data.productId)).limit(1)
+    const product = await loadProduct(Number(data.productId))
     if (!product) throw new Error('Ese producto ya no existe.')
+    const tracking = tracksOptionStock(product)
+    const options = parseOptions(product.options)
+    // Cada línea con cantidad es un lote aparte (en un producto con cantidad
+    // por opción, un lote por cada opción que se compró).
+    const lines = (Array.isArray(data.lines) ? data.lines : [])
+      .map((line) => ({ option: tracking ? String(line.option || '').trim() : '', quantity: Math.round(Number(line.quantity)), unitCost: Math.max(0, Math.round(Number(line.unitCost))) }))
+      .filter((line) => Number.isFinite(line.quantity) && line.quantity > 0)
+    if (!lines.length) throw new Error('Pon cuántas unidades compraste (al menos 1).')
+    for (const line of lines) {
+      if (!Number.isFinite(line.unitCost)) throw new Error('El costo no es válido.')
+      if (tracking && !options.includes(line.option)) throw new Error('Elige la opción de cada compra.')
+    }
+    const notes = String(data.notes || '').trim().slice(0, 300)
 
-    // FIFO: este lote nuevo solo se vuelve "el costo actual" si ya no
-    // queda stock de lotes anteriores (o sea, si es el próximo que se va a
-    // consumir). Si todavía hay stock viejo, el costo mostrado no cambia
-    // hasta que ese stock se agote — así se refleja el ahorro de comprar
-    // más barato solo cuando de verdad empiece a venderse ese lote.
-    const newCost = product.stock <= 0 ? unitCost : product.cost
-    await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
-    await db.insert(purchases).values({ productId: product.id, productName: product.name, quantity, unitCost, totalCost: quantity * unitCost, remainingQuantity: quantity, notes: data.notes.trim() })
-    return true
+    if (tracking) {
+      const added = new Map<string, number>()
+      for (const line of lines) added.set(line.option, (added.get(line.option) ?? 0) + line.quantity)
+      const variants = normalizeVariants(product).map((entry) => ({ ...entry, stock: (entry.stock ?? 0) + (added.get(entry.option) ?? 0) }))
+      const total = variants.reduce((sum, entry) => sum + (entry.stock ?? 0), 0)
+      await db.update(products).set({ variantImages: variants, stock: total, cost: product.stock <= 0 ? lines[0].unitCost : product.cost }).where(eq(products.id, product.id))
+    } else {
+      // FIFO: este lote nuevo solo se vuelve "el costo actual" si ya no
+      // queda stock de lotes anteriores (o sea, si es el próximo que se va a
+      // consumir). Si todavía hay stock viejo, el costo mostrado no cambia
+      // hasta que ese stock se agote.
+      const quantity = lines.reduce((sum, line) => sum + line.quantity, 0)
+      const newCost = product.stock <= 0 ? lines[0].unitCost : product.cost
+      await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
+    }
+    await db.insert(purchases).values(lines.map((line) => ({
+      productId: product.id, productName: product.name, option: line.option, quantity: line.quantity, unitCost: line.unitCost,
+      totalCost: line.quantity * line.unitCost, remainingQuantity: line.quantity, notes,
+    })))
+    return { lots: lines.length, total: lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) }
   })
 
 // Elimina una compra registrada por error (ej. una de prueba). Solo
@@ -682,13 +864,63 @@ export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator(
   } else {
     await db.delete(purchases).where(eq(purchases.id, data))
   }
-  const [product] = await db.select().from(products).where(eq(products.id, purchase.productId)).limit(1)
+  const product = await loadProduct(purchase.productId)
+  let adjustByHand = false
   if (product) {
-    await db.update(products).set({ stock: Math.max(0, product.stock - purchase.remainingQuantity) }).where(eq(products.id, purchase.productId))
+    if (tracksOptionStock(product) && !purchase.option) {
+      // Lote general (de antes de separar por opción): no se sabe de cuál
+      // opción eran esas unidades, así que las cantidades no se tocan; el
+      // panel avisa para corregirlas a mano en «Editar».
+      adjustByHand = true
+    } else {
+      await changeStock(product.id, purchase.option, -purchase.remainingQuantity)
+    }
     await syncCurrentCost(purchase.productId)
   }
-  return true
+  return { adjustByHand }
 })
+
+// Reparte un lote "general" (sin opción, ej. una compra registrada antes de
+// separar por opción) entre las opciones del producto: "de estos 8 a 26,
+// 3 son negro/amarillo y 5 son azul MagSafe". No cambia cuántas unidades
+// hay ni el dinero gastado: solo deja claro de qué opción es cada unidad
+// para que, al vender, cada opción salga con SU costo. Los lotes nuevos
+// conservan la fecha del original, así siguen en su mismo turno (FIFO).
+export const splitPurchase = createServerFn({ method: 'POST' })
+  .inputValidator((data: { id: number; parts: Array<{ option: string; quantity: number }> }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    const [purchase] = await db.select().from(purchases).where(eq(purchases.id, Number(data.id))).limit(1)
+    if (!purchase) throw new Error('Esa compra ya no existe.')
+    if (purchase.option) throw new Error('Este lote ya pertenece a una opción.')
+    if (purchase.remainingQuantity <= 0) throw new Error('De este lote ya no queda nada por repartir.')
+    const product = await loadProduct(purchase.productId)
+    if (!product) throw new Error('El producto de esta compra ya no existe.')
+    const options = parseOptions(product.options)
+    if (!options.length) throw new Error('Este producto no tiene opciones para repartir.')
+    const byOption = new Map<string, number>()
+    for (const part of Array.isArray(data.parts) ? data.parts : []) {
+      const quantity = Math.round(Number(part.quantity))
+      if (!Number.isFinite(quantity) || quantity <= 0) continue
+      const option = String(part.option || '').trim()
+      if (!options.includes(option)) throw new Error(`La opción «${option}» ya no existe en este producto.`)
+      byOption.set(option, (byOption.get(option) ?? 0) + quantity)
+    }
+    const total = [...byOption.values()].reduce((sum, quantity) => sum + quantity, 0)
+    if (total !== purchase.remainingQuantity) throw new Error(`Tienes que repartir exactamente ${purchase.remainingQuantity} (llevas ${total}).`)
+    await db.insert(purchases).values([...byOption.entries()].map(([option, quantity]) => ({
+      productId: purchase.productId, productName: purchase.productName, option, quantity, unitCost: purchase.unitCost,
+      totalCost: quantity * purchase.unitCost, remainingQuantity: quantity, notes: purchase.notes, createdAt: purchase.createdAt,
+    })))
+    const sold = purchase.quantity - purchase.remainingQuantity
+    if (sold > 0) {
+      await db.update(purchases).set({ quantity: sold, remainingQuantity: 0, totalCost: sold * purchase.unitCost }).where(eq(purchases.id, purchase.id))
+    } else {
+      await db.delete(purchases).where(eq(purchases.id, purchase.id))
+    }
+    await syncCurrentCost(purchase.productId)
+    return true
+  })
 
 // Registra un gasto del negocio o un gasto/retiro personal. `type`
 // 'negocio' sale del Capital disponible (no toca la ganancia a repartir);

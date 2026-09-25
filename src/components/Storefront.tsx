@@ -7,6 +7,8 @@ import {
   Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Store, Trash2, Truck, Watch, X,
 } from 'lucide-react'
 import { createOrder, type CartLine } from '@/lib/store'
+import { hasOwnPrice, optionPrice, optionStock, parseOptions as parseOptionList, priceRange, resolveOption, tracksOptionStock, variantFor, lineName } from '@/lib/variants'
+import type { ProductVariant } from '@/lib/variants'
 import { ShareButton } from './ShareButton'
 
 type Product = {
@@ -19,7 +21,8 @@ type Product = {
   originalPrice: number
   stock: number
   image: string
-  variantImages: Array<{ option: string; image: string; description: string }>
+  variantImages: ProductVariant[]
+  optionStock: boolean
   featured: boolean
   isNew: boolean
   bestSeller: boolean
@@ -28,16 +31,21 @@ type Props = { data: { products: Product[]; content: Record<string, string> } }
 
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
 
-/** Busca la foto/descripción propia de una opción elegida (color, diseño,
- * modelo de iPhone, etc.). Si esa opción no tiene una foto propia subida
- * desde el admin, devuelve undefined y quien llama cae de vuelta a la
- * foto/descripción general del producto. */
-function variantFor(product: Product, option: string) {
-  return option ? (product.variantImages || []).find((entry) => entry.option === option) : undefined
+// La foto/descripción/precio/cantidad propios de cada opción (color,
+// diseño, modelo…) salen de src/lib/variants.ts (variantFor, optionPrice,
+// optionStock…), el mismo archivo que usa el servidor para cobrar y
+// descontar, así la tienda y el pedido nunca calculan distinto.
+function parseOptions(product: Product) {
+  return parseOptionList(product.options)
 }
 
-function parseOptions(product: Product) {
-  return product.options.split(',').map((item) => item.trim()).filter(Boolean)
+/** Opción que se muestra elegida al abrir: la pedida si todavía se puede
+ * comprar; si no, la primera que tenga unidades. */
+function defaultOption(product: Product, preferred?: string) {
+  const options = parseOptions(product)
+  if (preferred && options.includes(preferred) && optionStock(product, preferred) > 0) return preferred
+  if (tracksOptionStock(product)) return options.find((option) => optionStock(product, option) > 0) ?? preferred ?? options[0] ?? ''
+  return preferred && options.includes(preferred) ? preferred : options[0] ?? ''
 }
 
 type GalleryItem = { image: string; option: string | null }
@@ -61,7 +69,10 @@ function galleryIndexFor(gallery: GalleryItem[], option: string) {
   return gallery.findIndex((item) => item.option === option)
 }
 
-function discountPercent(product: Product) {
+/** % de descuento. Solo aplica al precio general: una opción con precio
+ * propio no se muestra tachada contra el precio anterior del producto. */
+function discountPercent(product: Product, option?: string) {
+  if (option && hasOwnPrice(product, option)) return 0
   return product.originalPrice > product.price ? Math.round((1 - product.price / product.originalPrice) * 100) : 0
 }
 
@@ -228,11 +239,18 @@ type AddHandler = (product: Product, option: string | undefined, quantity: numbe
 function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddHandler; onOpen: (product: Product, option: string, index: number) => void }) {
   const options = useMemo(() => parseOptions(product), [product])
   const gallery = useMemo(() => buildGallery(product, options), [product, options])
-  const [selected, setSelected] = useState(options[0] ?? '')
+  const [selected, setSelected] = useState(() => defaultOption(product))
+  const [picked, setPicked] = useState(false)
   const [index, setIndex] = useState(0)
   const [added, setAdded] = useState(false)
-  const percent = discountPercent(product)
+  const range = priceRange(product)
+  // Si las opciones no valen todas igual, se muestra "Desde RD$…" hasta que
+  // el cliente toque una opción; ahí se ve el precio de esa.
+  const showFrom = range.min !== range.max && !picked
+  const shownPrice = showFrom ? range.min : optionPrice(product, selected)
+  const percent = showFrom ? 0 : discountPercent(product, selected)
   const soldOut = product.stock <= 0
+  const selectedOut = tracksOptionStock(product) && optionStock(product, selected) <= 0
   const swatchOptions = options.filter((option) => variantFor(product, option)?.image)
   const hasSwatches = swatchOptions.length > 0
   const textOnlyOptions = options.length > 0 && !hasSwatches
@@ -240,10 +258,11 @@ function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddH
   const handleIndex = (next: number) => {
     setIndex(next)
     const option = gallery[next]?.option
-    if (option) setSelected(option)
+    if (option) { setSelected(option); setPicked(true) }
   }
   const pickOption = (option: string) => {
     setSelected(option)
+    setPicked(true)
     const galleryIndex = galleryIndexFor(gallery, option)
     if (galleryIndex >= 0) setIndex(galleryIndex)
   }
@@ -251,7 +270,9 @@ function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddH
     event.stopPropagation()
     // Si las opciones son solo texto (ej. modelos de iPhone) no hay forma
     // de elegir desde la tarjeta: se abre la ficha para escoger primero.
-    if (textOnlyOptions) { onOpen(product, selected, index); return }
+    // Lo mismo si la opción elegida está agotada o si no todas valen igual
+    // (para que el cliente vea el precio de la que se lleva).
+    if (textOnlyOptions || selectedOut || showFrom) { onOpen(product, selected, index); return }
     if (onAdd(product, selected || undefined, 1)) {
       setAdded(true)
       setTimeout(() => setAdded(false), 1100)
@@ -270,7 +291,7 @@ function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddH
         {hasSwatches && (
           <div className="card-swatches" onClick={(event) => event.stopPropagation()}>
             {swatchOptions.slice(0, 4).map((option) => (
-              <button type="button" key={option} className={option === selected ? 'active' : ''} title={option} aria-label={option} onClick={() => pickOption(option)}>
+              <button type="button" key={option} className={`${option === selected ? 'active' : ''} ${tracksOptionStock(product) && optionStock(product, option) <= 0 ? 'soldout' : ''}`} title={option} aria-label={option} onClick={() => pickOption(option)}>
                 <img src={variantFor(product, option)?.image} alt="" loading="lazy" />
               </button>
             ))}
@@ -287,7 +308,8 @@ function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddH
         )}
         <div className="product-card-foot">
           <div className="product-card-price">
-            <strong>{money(product.price)}</strong>
+            {showFrom && <small className="price-from">Desde</small>}
+            <strong>{money(shownPrice)}</strong>
             {percent > 0 && <s>{money(product.originalPrice)}</s>}
           </div>
           <button type="button" className={`card-add ${added ? 'done' : ''}`} disabled={soldOut} onClick={handleAdd} aria-label={textOnlyOptions ? 'Elegir opción' : 'Agregar al carrito'}>
@@ -314,7 +336,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
 }) {
   const options = useMemo(() => parseOptions(product), [product])
   const gallery = useMemo(() => buildGallery(product, options), [product, options])
-  const [selected, setSelected] = useState(initialOption || options[0] || '')
+  const [selected, setSelected] = useState(() => defaultOption(product, initialOption))
   const [index, setIndex] = useState(() => Math.min(Math.max(0, initialIndex), gallery.length - 1))
   const [quantity, setQuantity] = useState(1)
   const [visible, setVisible] = useState(false)
@@ -322,9 +344,17 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
 
   const variant = variantFor(product, selected)
   const description = variant?.description || product.description
-  const percent = discountPercent(product)
-  const soldOut = product.stock <= 0
+  const tracking = tracksOptionStock(product)
+  const price = optionPrice(product, selected)
+  const percent = discountPercent(product, selected)
+  // Unidades de la opción elegida (o del producto, si comparten cantidad).
+  const available = optionStock(product, selected)
+  const soldOut = available <= 0
   const hasImageOptions = options.some((option) => variantFor(product, option)?.image)
+  const isOut = (option: string) => tracking && optionStock(product, option) <= 0
+
+  // Al cambiar de opción, la cantidad no puede pasar de lo que hay de esa.
+  useEffect(() => { setQuantity((q) => Math.min(Math.max(1, q), Math.max(1, available))) }, [available])
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setVisible(true))
@@ -354,6 +384,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
     if (galleryIndex >= 0) setIndex(galleryIndex)
   }
   const handleAdd = () => {
+    if (soldOut) return
     if (!onAdd(product, selected || undefined, quantity)) return
     setAdded(true)
     setTimeout(() => setAdded(false), 1400)
@@ -395,7 +426,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
 
             <div className="pd-info">
               <div className="pd-price">
-                <strong>{money(product.price)}</strong>
+                <strong>{money(price)}</strong>
                 {percent > 0 && <>
                   <s>{money(product.originalPrice)}</s>
                   <span className="pd-off">-{percent}%</span>
@@ -409,28 +440,29 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
                 <span className="pd-tag-cat">{product.category}</span>
                 {product.bestSeller && <span className="tag-hot"><Flame size={11} />Más vendido</span>}
                 {product.isNew && <span className="tag-new">Nuevo</span>}
-                {soldOut ? <span className="tag-out">Agotado</span> : product.stock <= 5 ? <span className="tag-low">¡Solo quedan {product.stock}!</span> : <span className="tag-ok"><Check size={11} />Disponible</span>}
+                {soldOut ? <span className="tag-out">{tracking && product.stock > 0 ? 'Esta opción está agotada' : 'Agotado'}</span> : available <= 5 ? <span className="tag-low">¡Solo quedan {available}!</span> : <span className="tag-ok"><Check size={11} />Disponible</span>}
               </div>
 
               {options.length > 0 && (
                 <div className="pd-block">
                   <div className="pd-block-head">
                     <span>Opción: <strong>{selected}</strong></span>
-                    <em>{options.length} {options.length === 1 ? 'disponible' : 'disponibles'}</em>
+                    <em>{options.length} {options.length === 1 ? 'opción' : 'opciones'}</em>
                   </div>
                   {hasImageOptions ? (
                     <div className="pd-variants">
                       {options.map((option) => (
-                        <button type="button" key={option} className={option === selected ? 'active' : ''} onClick={() => pickOption(option)}>
-                          <span className="pd-variant-img"><img src={variantFor(product, option)?.image || product.image} alt="" loading="lazy" /></span>
+                        <button type="button" key={option} className={`${option === selected ? 'active' : ''} ${isOut(option) ? 'soldout' : ''}`} onClick={() => pickOption(option)}>
+                          <span className="pd-variant-img"><img src={variantFor(product, option)?.image || product.image} alt="" loading="lazy" />{isOut(option) && <em>Agotado</em>}</span>
                           <span className="pd-variant-name">{option}</span>
+                          {hasOwnPrice(product, option) && <span className="pd-variant-price">{money(optionPrice(product, option))}</span>}
                         </button>
                       ))}
                     </div>
                   ) : (
                     <div className="pd-chips">
                       {options.map((option) => (
-                        <button type="button" key={option} className={option === selected ? 'active' : ''} onClick={() => pickOption(option)}>{option}</button>
+                        <button type="button" key={option} className={`${option === selected ? 'active' : ''} ${isOut(option) ? 'soldout' : ''}`} onClick={() => pickOption(option)}>{option}{hasOwnPrice(product, option) && <small> · {money(optionPrice(product, option))}</small>}</button>
                       ))}
                     </div>
                   )}
@@ -441,8 +473,8 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
                 <span>Cantidad</span>
                 <div className="pd-stepper">
                   <button type="button" onClick={() => setQuantity((q) => Math.max(1, q - 1))} disabled={quantity <= 1} aria-label="Menos"><Minus size={15} /></button>
-                  <QtyInput value={quantity} max={product.stock} onChange={setQuantity} />
-                  <button type="button" onClick={() => setQuantity((q) => Math.min(Math.max(1, product.stock), q + 1))} disabled={soldOut || quantity >= product.stock} aria-label="Más"><Plus size={15} /></button>
+                  <QtyInput value={quantity} max={available} onChange={setQuantity} />
+                  <button type="button" onClick={() => setQuantity((q) => Math.min(Math.max(1, available), q + 1))} disabled={soldOut || quantity >= available} aria-label="Más"><Plus size={15} /></button>
                 </div>
               </div>
 
@@ -465,7 +497,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
         <div className="pd-actionbar">
           <div className="pd-actionbar-total">
             <span>Total</span>
-            <strong>{money(product.price * quantity)}</strong>
+            <strong>{money(price * quantity)}</strong>
           </div>
           <button type="button" className={`pd-add ${added ? 'done' : ''}`} disabled={soldOut} onClick={handleAdd}>
             {soldOut ? 'Agotado' : added ? <><Check size={18} />Agregado</> : <><ShoppingCart size={18} />Agregar al carrito</>}
@@ -726,13 +758,13 @@ export function Storefront({ data }: Props) {
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
-  const maxPossiblePrice = useMemo(() => products.reduce((max, product) => Math.max(max, product.price), 0) || 1000000, [products])
+  const maxPossiblePrice = useMemo(() => products.reduce((max, product) => Math.max(max, priceRange(product).max), 0) || 1000000, [products])
   const activeFilterCount = (category !== 'Todos' ? 1 : 0) + (maxPrice !== null ? 1 : 0)
 
   const visibleProducts = useMemo(() => products.filter((product) =>
     (category === 'Todos' || product.category === category) &&
-    (maxPrice === null || product.price <= maxPrice) &&
-    `${product.name} ${product.description}`.toLowerCase().includes(query.toLowerCase()),
+    (maxPrice === null || priceRange(product).min <= maxPrice) &&
+    `${product.name} ${product.description} ${product.options}`.toLowerCase().includes(query.toLowerCase()),
   ), [products, category, query, maxPrice])
 
   const offersProducts = useMemo(() => {
@@ -756,25 +788,46 @@ export function Storefront({ data }: Props) {
    * un mismo producto nunca pasa del stock disponible. Devuelve false si
    * no se pudo agregar nada (ya estaba al máximo). */
   const addToCart = (product: Product, option: string | undefined, quantity: number): boolean => {
-    const variant = option ? variantFor(product, option) : undefined
-    const name = option ? `${product.name} — ${option}` : product.name
+    const chosen = resolveOption(product, option)
+    const variant = variantFor(product, chosen)
+    const name = lineName(product.name, chosen)
     const image = variant?.image || product.image
-    const inCart = cart.filter((line) => line.productId === product.id).reduce((sum, line) => sum + line.quantity, 0)
-    const addable = Math.min(quantity, Math.max(0, product.stock - inCart))
+    const limit = optionStock(product, chosen)
+    const inCart = cart.filter((line) => sameBucket(line, product.id, chosen)).reduce((sum, line) => sum + line.quantity, 0)
+    const addable = Math.min(quantity, Math.max(0, limit - inCart))
     if (addable <= 0) {
-      showToast({ title: `Ya tienes todas las unidades disponibles (${product.stock})`, name, image })
+      showToast({ title: limit <= 0 ? 'Esa opción está agotada' : `Ya tienes todas las unidades disponibles (${limit})`, name, image })
       return false
     }
     setCart((current) => {
       const existing = current.find((line) => line.productId === product.id && line.name === name)
       if (existing) return current.map((line) => line === existing ? { ...line, quantity: line.quantity + addable } : line)
-      return [...current, { productId: product.id, name, price: product.price, quantity: addable, image }]
+      return [...current, { productId: product.id, name, price: optionPrice(product, chosen), quantity: addable, image, option: chosen }]
     })
     showToast({ title: addable < quantity ? `Solo se agregaron ${addable} (stock disponible)` : `Agregado al carrito${addable > 1 ? ` · ${addable} uds.` : ''}`, name, image })
     return true
   }
 
   const lineKey = (line: CartLine) => `${line.productId}::${line.name}`
+
+  /** ¿Esta línea del carrito comparte las mismas unidades que esa opción?
+   * Si el producto lleva cantidad por opción, solo la misma opción; si no,
+   * todas las líneas del producto comparten la misma existencia. */
+  function sameBucket(line: CartLine, productId: number, option: string) {
+    if (line.productId !== productId) return false
+    const product = products.find((item) => item.id === productId)
+    if (!product || !tracksOptionStock(product)) return true
+    return resolveOption(product, line.option, line.name) === option
+  }
+
+  /** Máximo de unidades que puede tener esa línea sin pasarse de lo que hay. */
+  function maxForLine(line: CartLine, lines: CartLine[]) {
+    const product = products.find((item) => item.id === line.productId)
+    if (!product) return line.quantity
+    const option = resolveOption(product, line.option, line.name)
+    const others = lines.filter((other) => other !== line && sameBucket(other, product.id, option)).reduce((sum, other) => sum + other.quantity, 0)
+    return Math.max(0, optionStock(product, option) - others)
+  }
 
   // El carrito se guarda en el teléfono del cliente: si recarga la página
   // o vuelve más tarde, sus productos siguen ahí. Al cargarlo se corrige
@@ -785,16 +838,19 @@ export function Storefront({ data }: Props) {
     try {
       const saved = JSON.parse(localStorage.getItem('jb-cart') || '[]') as CartLine[]
       if (Array.isArray(saved) && saved.length) {
-        const used = new Map<number, number>()
+        const used = new Map<string, number>()
         const fixed: CartLine[] = []
         for (const line of saved) {
           const product = products.find((item) => item.id === line.productId)
           if (!product || product.stock <= 0 || typeof line.name !== 'string') continue
-          const room = product.stock - (used.get(product.id) ?? 0)
+          const option = resolveOption(product, line.option, line.name)
+          if (parseOptions(product).length > 0 && !option) continue // esa opción ya no existe
+          const bucket = tracksOptionStock(product) ? `${product.id}::${option}` : String(product.id)
+          const room = optionStock(product, option) - (used.get(bucket) ?? 0)
           const quantity = Math.min(Math.max(1, Math.round(Number(line.quantity) || 1)), room)
           if (quantity <= 0) continue
-          used.set(product.id, (used.get(product.id) ?? 0) + quantity)
-          fixed.push({ productId: product.id, name: line.name.startsWith(product.name) ? line.name : product.name, price: product.price, quantity, image: line.image || product.image })
+          used.set(bucket, (used.get(bucket) ?? 0) + quantity)
+          fixed.push({ productId: product.id, name: lineName(product.name, option), price: optionPrice(product, option), quantity, image: line.image || product.image, option })
         }
         setCart(fixed)
       }
@@ -810,9 +866,7 @@ export function Storefront({ data }: Props) {
   const changeQuantity = (key: string, delta: number) => setCart((current) => {
     const target = current.find((line) => lineKey(line) === key)
     if (!target) return current
-    const product = products.find((item) => item.id === target.productId)
-    const others = current.filter((line) => line.productId === target.productId && line !== target).reduce((sum, line) => sum + line.quantity, 0)
-    const max = Math.max(0, (product?.stock ?? target.quantity) - others)
+    const max = maxForLine(target, current)
     const quantity = Math.min(target.quantity + delta, max)
     return quantity > 0 ? current.map((line) => (line === target ? { ...line, quantity } : line)) : current.filter((line) => line !== target)
   })
@@ -1048,7 +1102,7 @@ export function Storefront({ data }: Props) {
       <div className="cart-lines">
         {cart.map((line) => <div className="cart-line" key={lineKey(line)}>
           <img src={line.image} alt="" />
-          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(lineKey(line), -1)} aria-label="Menos"><Minus size={14} /></button><QtyInput className="cart-qty-input" value={line.quantity} max={(products.find((item) => item.id === line.productId)?.stock ?? line.quantity) - cart.filter((other) => other.productId === line.productId && other !== line).reduce((sum, other) => sum + other.quantity, 0)} onChange={(next) => changeQuantity(lineKey(line), next - line.quantity)} /><button onClick={() => changeQuantity(lineKey(line), 1)} aria-label="Más"><Plus size={14} /></button></div></div>
+          <div><h4>{line.name}</h4><p>{money(line.price)}</p><div className="quantity"><button onClick={() => changeQuantity(lineKey(line), -1)} aria-label="Menos"><Minus size={14} /></button><QtyInput className="cart-qty-input" value={line.quantity} max={maxForLine(line, cart)} onChange={(next) => changeQuantity(lineKey(line), next - line.quantity)} /><button onClick={() => changeQuantity(lineKey(line), 1)} aria-label="Más"><Plus size={14} /></button></div></div>
           <button className="remove" aria-label="Quitar" onClick={() => setCart((current) => current.filter((item) => lineKey(item) !== lineKey(line)))}><Trash2 size={16} /></button>
         </div>)}
         {!cart.length && <div className="empty-cart"><ShoppingCart /><h3>Tu carrito está vacío</h3><p>Explora el catálogo y agrega tus productos favoritos.</p></div>}

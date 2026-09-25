@@ -1,25 +1,168 @@
 import { useEffect, useState } from 'react'
-import type { ChangeEvent, ComponentType, FormEvent } from 'react'
+import type { ChangeEvent, ComponentType, FormEvent, ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  AlertTriangle, Check, ChevronLeft, Download, LayoutDashboard, ListOrdered, LogOut, Package,
-  Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, ShoppingCart, Trash2, Upload, Users, Wallet, X,
+  AlertTriangle, Check, ChevronLeft, Download, Layers, LayoutDashboard, ListOrdered, LogOut, Package,
+  Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, ShoppingCart, SlidersHorizontal, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
   CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deletePurchase, deleteProduct,
   getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
   recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
-  saveProduct, updateOrder, updateOrderStatus,
+  saveProduct, splitPurchase, updateOrder, updateOrderStatus,
 } from '@/lib/store'
+import {
+  hasOwnPrice, normalizeVariants, optionFromName, optionPrice, optionStock, parseOptions, priceRange, tracksOptionStock,
+} from '@/lib/variants'
+import type { ProductVariant } from '@/lib/variants'
 
 const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
 const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
+const shortDate = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short' }).format(new Date(value))
 
-type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number }
+type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: ProductVariant[]; optionStock: boolean; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
+type Purchase = { id: number; productId: number; productName: string; option: string; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
+type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
+type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
+
+/** Una opción (color/diseño/modelo) mientras se edita el producto. `key`
+ * no cambia aunque se le cambie el nombre, y `originalName` es el nombre
+ * que tenía guardado — así sus compras la siguen si se renombra. */
+type OptionDraft = { key: string; name: string; originalName: string; image: string; description: string; price: string; stock: string }
+type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; optionStock: boolean; options: OptionDraft[]; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
+type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
+type PurchaseLine = { option: string; quantity: string; unitCost: string }
+type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string }
+type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
+type SaleLine = { productId: string; option: string; quantity: string; price: string }
+type SaleDraft = { customerName: string; phone: string; notes: string; paymentStatus: string; lines: SaleLine[] }
+type SplitDraft = { purchase: Purchase; parts: Record<string, string> }
+type LotStatus = 'ahora' | 'espera' | 'vendido'
+
+type CatalogFilter = 'todos' | 'agotados' | 'bajo' | 'sincosto' | 'ocultos'
+const CATALOG_FILTERS: Array<{ id: CatalogFilter; label: string }> = [
+  { id: 'todos', label: 'Todos' },
+  { id: 'agotados', label: 'Agotados' },
+  { id: 'bajo', label: 'Quedan pocos' },
+  { id: 'sincosto', label: 'Sin costo' },
+  { id: 'ocultos', label: 'Ocultos' },
+]
+type Tab = 'resumen' | 'finanzas' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
+
+const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
+const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
+
+let keySeq = 0
+const newKey = () => `op-${Date.now().toString(36)}-${(keySeq++).toString(36)}`
+const cents = (value: string) => Math.round(Number(value || 0) * 100)
+const toMoneyInput = (value: number) => (value ? String(value / 100) : '')
+
+function emptyOption(): OptionDraft {
+  return { key: newKey(), name: '', originalName: '', image: '', description: '', price: '', stock: '0' }
+}
+
+function emptyDraft(): ProductDraft {
+  return { name: '', category: CATEGORIES[0], description: '', price: '', originalPrice: '', stock: '0', image: '', optionStock: true, options: [], featured: false, isNew: false, bestSeller: false, active: true }
+}
+
+function toDraft(product: Product): ProductDraft {
+  return {
+    id: product.id, name: product.name, category: product.category, description: product.description,
+    price: String(product.price / 100), originalPrice: toMoneyInput(product.originalPrice), stock: String(product.stock), image: product.image,
+    optionStock: Boolean(product.optionStock),
+    options: normalizeVariants(product).map((entry) => ({ key: newKey(), name: entry.option, originalName: entry.option, image: entry.image, description: entry.description, price: toMoneyInput(entry.price ?? 0), stock: String(entry.stock ?? 0) })),
+    featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active,
+  }
+}
+
+function purchaseDraftFor(product?: Product): PurchaseDraft {
+  const lines = product && tracksOptionStock(product)
+    ? parseOptions(product.options).map((option) => ({ option, quantity: '', unitCost: '' }))
+    : [{ option: '', quantity: '1', unitCost: '' }]
+  return { productId: product ? String(product.id) : '', notes: '', lines, sameCost: '' }
+}
+
+function emptyExpenseDraft(): ExpenseDraft {
+  return { type: 'negocio', description: '', amount: '' }
+}
+
+/** Primera opción que se puede vender (si lleva cantidad por opción, la
+ * primera que tenga unidades). */
+function firstSellableOption(product: Product) {
+  const options = parseOptions(product.options)
+  if (!tracksOptionStock(product)) return options[0] ?? ''
+  return options.find((option) => optionStock(product, option) > 0) ?? options[0] ?? ''
+}
+
+function emptySaleLine(product?: Product): SaleLine {
+  const option = product ? firstSellableOption(product) : ''
+  return { productId: product ? String(product.id) : '', option, quantity: '1', price: product ? String(optionPrice(product, option) / 100) : '' }
+}
+
+const byFifo = (a: Purchase, b: Purchase) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id
+
+/** En qué turno está cada lote: "ahora" = el próximo del que va a salir
+ * una venta; "espera" = le toca después; "vendido" = ya no le queda nada.
+ * En un producto con cantidad por opción, cada opción tiene su propia fila
+ * (sus lotes + los lotes generales sin opción). */
+function lotStatuses(lots: Purchase[], product: Product | undefined): Map<number, LotStatus> {
+  const statuses = new Map<number, LotStatus>()
+  const tracking = product ? tracksOptionStock(product) : false
+  for (const lot of lots) {
+    if (lot.remainingQuantity <= 0) { statuses.set(lot.id, 'vendido'); continue }
+    const pool = lots
+      .filter((other) => other.remainingQuantity > 0 && (!tracking || (lot.option ? other.option === lot.option || other.option === '' : other.option === '')))
+      .sort(byFifo)
+    statuses.set(lot.id, pool[0]?.id === lot.id ? 'ahora' : 'espera')
+  }
+  return statuses
+}
+
+/** Costo del próximo lote que va a salir para esa opción (o del producto). */
+function nextLotFor(lots: Purchase[], product: Product, option: string): Purchase | undefined {
+  const tracking = tracksOptionStock(product)
+  return lots
+    .filter((lot) => lot.remainingQuantity > 0 && (!tracking || !option || lot.option === option || lot.option === ''))
+    .sort(byFifo)[0]
+}
+
+const STATUS_LABEL: Record<LotStatus, string> = { ahora: 'Se vende ahora', espera: 'En espera', vendido: 'Vendido completo' }
+
+function LotRow({ lot, status, showProduct, general, busy, onDelete, onSplit }: { lot: Purchase; status: LotStatus; showProduct?: boolean; general?: boolean; busy: boolean; onDelete: () => void; onSplit?: () => void }) {
+  const sold = lot.quantity - lot.remainingQuantity
+  const percent = lot.quantity > 0 ? Math.round((sold / lot.quantity) * 100) : 0
+  return (
+    <div className={`lot-row lot-${status}`}>
+      <div className="lot-row-top">
+        <div className="lot-row-title">
+          {showProduct && <strong>{lot.productName}</strong>}
+          {lot.option ? <span className="lot-option">{lot.option}</span> : general ? <span className="lot-option lot-option-general">Sin opción</span> : null}
+        </div>
+        <span className={`lot-badge lot-badge-${status}`}>{STATUS_LABEL[status]}</span>
+      </div>
+      <p className="lot-row-numbers"><b>{lot.quantity} × {money(lot.unitCost)}</b> = {money(lot.totalCost)} · {shortDate(lot.createdAt)}</p>
+      <div className="lot-bar" aria-hidden="true"><span style={{ width: `${percent}%` }} /></div>
+      <p className="lot-row-foot">
+        {sold <= 0 ? `Nada vendido todavía · quedan ${lot.remainingQuantity}` : lot.remainingQuantity > 0 ? `Vendidas ${sold} · quedan ${lot.remainingQuantity}` : `Se vendieron las ${lot.quantity}`}
+        {lot.notes ? ` · ${lot.notes}` : ''}
+      </p>
+      {(onSplit || lot.remainingQuantity > 0) && (
+        <div className="lot-row-actions">
+          {onSplit && <button type="button" disabled={busy} onClick={onSplit}><SlidersHorizontal size={14} />Repartir entre opciones</button>}
+          {lot.remainingQuantity > 0 && <button type="button" className="danger" disabled={busy} onClick={onDelete} title="Eliminar compra (si se registró mal)"><Trash2 size={14} />Borrar</button>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Collapsible({ title, children, defaultOpen = false }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
+  return <details className="admin-details" open={defaultOpen}><summary>{title}</summary><div className="admin-details-body">{children}</div></details>
+}
 
 /** Carga jsPDF desde CDN la primera vez que hace falta (al ver/descargar
  * una factura), igual que el recibo del cliente carga html2canvas — así
@@ -81,38 +224,6 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
   doc.text('Gracias por comprar en JB Tech Store.', 40, y + 40)
   return doc
 }
-type Purchase = { id: number; productId: number; productName: string; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
-type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
-type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
-type ProductDraft = { id?: number; name: string; category: string; description: string; options: string; price: string; originalPrice: string; stock: string; image: string; variantImages: Array<{ option: string; image: string; description: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
-type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
-type PurchaseDraft = { productId: string; quantity: string; unitCost: string; notes: string }
-type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
-type SaleLine = { productId: string; option: string; quantity: string; price: string }
-type SaleDraft = { customerName: string; phone: string; notes: string; paymentStatus: string; lines: SaleLine[] }
-function emptySaleLine(product?: Product): SaleLine {
-  return { productId: product ? String(product.id) : '', option: product ? (parseOptions(product.options)[0] ?? '') : '', quantity: '1', price: product ? String(product.price / 100) : '' }
-}
-type CatalogFilter = 'todos' | 'agotados' | 'bajo' | 'sincosto' | 'ocultos'
-const CATALOG_FILTERS: Array<{ id: CatalogFilter; label: string }> = [
-  { id: 'todos', label: 'Todos' },
-  { id: 'agotados', label: 'Agotados' },
-  { id: 'bajo', label: 'Stock bajo' },
-  { id: 'sincosto', label: 'Sin costo' },
-  { id: 'ocultos', label: 'Ocultos' },
-]
-type Tab = 'resumen' | 'finanzas' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
-
-function emptyPurchaseDraft(): PurchaseDraft {
-  return { productId: '', quantity: '1', unitCost: '', notes: '' }
-}
-
-function emptyExpenseDraft(): ExpenseDraft {
-  return { type: 'negocio', description: '', amount: '' }
-}
-
-const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
-const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
 
 const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' | 'select'; options?: Array<{ value: string; label: string }>; showIf?: (draft: Record<string, string>) => boolean }> }> = [
   { title: 'Marca', fields: [
@@ -206,18 +317,6 @@ function daysLeft(deletedAt: string) {
   return Math.max(0, 30 - Math.floor(elapsed / 86400000))
 }
 
-function parseOptions(options: string) {
-  return options.split(',').map((item) => item.trim()).filter(Boolean)
-}
-
-function emptyDraft(): ProductDraft {
-  return { name: '', category: CATEGORIES[0], description: '', options: '', price: '', originalPrice: '', stock: '0', image: '', variantImages: [], featured: false, isNew: false, bestSeller: false, active: true }
-}
-
-function toDraft(product: Product): ProductDraft {
-  return { id: product.id, name: product.name, category: product.category, description: product.description, options: product.options, price: String(product.price / 100), originalPrice: product.originalPrice ? String(product.originalPrice / 100) : '', stock: String(product.stock), image: product.image, variantImages: product.variantImages || [], featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active }
-}
-
 export function AdminPanel() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
   const [password, setPassword] = useState('')
@@ -239,9 +338,13 @@ export function AdminPanel() {
   const [purchaseQuery, setPurchaseQuery] = useState('')
   const [purchaseLimit, setPurchaseLimit] = useState(15)
   const [expenseLimit, setExpenseLimit] = useState(15)
+  const [financeView, setFinanceView] = useState<'compras' | 'gastos'>('compras')
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>('todos')
   const [catalogCategory, setCatalogCategory] = useState('')
   const [saleDraft, setSaleDraft] = useState<SaleDraft | null>(null)
+  const [lotsProductId, setLotsProductId] = useState<number | null>(null)
+  const [splitDraft, setSplitDraft] = useState<SplitDraft | null>(null)
+  const [pendingRestock, setPendingRestock] = useState<number | null>(null)
   const [notice, setNotice] = useState('')
 
   async function refresh() {
@@ -260,6 +363,18 @@ export function AdminPanel() {
       if (ok) await refresh().catch((caught) => setError(caught instanceof Error ? caught.message : 'No pudimos cargar los datos.'))
     })
   }, [])
+
+  // Recién creado un producto, se abre de una vez «Reponer» para registrar
+  // cuántas unidades se compraron y a cuánto (un producto nuevo empieza en 0).
+  useEffect(() => {
+    if (!pendingRestock || !data) return
+    const product = data.products.find((item) => item.id === pendingRestock)
+    if (product) {
+      setEditingPurchase(purchaseDraftFor(product))
+      setNotice(`«${product.name}» quedó guardado. Ahora registra cuántas compraste y a cuánto cada una.`)
+    }
+    setPendingRestock(null)
+  }, [pendingRestock, data])
 
   // Muestra qué voces en español expone de verdad el navegador donde se
   // abre este panel (no las del visitante). Sirve para entender por qué
@@ -312,28 +427,48 @@ export function AdminPanel() {
     }
   }
 
+  // ─── Producto: guardar y opciones ───
+  function updateOption(key: string, patch: Partial<OptionDraft>) {
+    setEditing((current) => current && { ...current, options: current.options.map((option) => (option.key === key ? { ...option, ...patch } : option)) })
+  }
+
+  function removeOption(key: string) {
+    setEditing((current) => current && { ...current, options: current.options.filter((option) => option.key !== key) })
+  }
+
   async function handleSaveProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editing) return
+    // Las opciones se guardan separadas por coma, así que una coma dentro
+    // del nombre lo partiría en dos: se cambia por "/".
+    const names = editing.options.map((option) => option.name.replace(/,/g, '/').trim())
+    if (names.some((name) => !name)) { setError('Ponle nombre a cada opción (o bórrala con la X).'); return }
+    if (new Set(names).size !== names.length) { setError('Hay dos opciones con el mismo nombre. Cámbiale el nombre a una de ellas.'); return }
+    const draft = editing
+    let createdId = 0
     await withBusy(async () => {
-      await saveProduct({ data: {
-        id: editing.id,
-        name: editing.name,
-        category: editing.category,
-        description: editing.description,
-        options: editing.options,
-        price: Math.round(Number(editing.price || 0) * 100),
-        originalPrice: Math.round(Number(editing.originalPrice || 0) * 100),
-        stock: Math.round(Number(editing.stock || 0)),
-        image: editing.image,
-        variantImages: editing.variantImages,
-        featured: editing.featured,
-        isNew: editing.isNew,
-        bestSeller: editing.bestSeller,
-        active: editing.active,
+      const id = await saveProduct({ data: {
+        id: draft.id,
+        name: draft.name,
+        category: draft.category,
+        description: draft.description,
+        options: names.join(', '),
+        price: cents(draft.price),
+        originalPrice: cents(draft.originalPrice),
+        stock: Math.round(Number(draft.stock || 0)),
+        image: draft.image,
+        variantImages: draft.options.map((option, index) => ({ option: names[index], image: option.image, description: option.description, price: cents(option.price), stock: Math.round(Number(option.stock || 0)) })),
+        optionStock: draft.optionStock && names.length > 0,
+        renames: draft.options.map((option, index) => ({ from: option.originalName, to: names[index] })).filter((rename) => rename.from && rename.from !== rename.to),
+        featured: draft.featured,
+        isNew: draft.isNew,
+        bestSeller: draft.bestSeller,
+        active: draft.active,
       } })
+      if (!draft.id) createdId = Number(id)
       setEditing(null)
     })
+    if (createdId) setPendingRestock(createdId)
   }
 
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
@@ -352,35 +487,20 @@ export function AdminPanel() {
     }
   }
 
-  function upsertVariant(option: string, patch: Partial<{ image: string; description: string }>) {
-    setEditing((current) => {
-      if (!current) return current
-      const idx = current.variantImages.findIndex((entry) => entry.option === option)
-      const variantImages = idx === -1
-        ? [...current.variantImages, { option, image: '', description: '', ...patch }]
-        : current.variantImages.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry))
-      return { ...current, variantImages }
-    })
-  }
-
-  async function handleVariantImageChange(option: string, event: ChangeEvent<HTMLInputElement>) {
+  async function handleVariantImageChange(key: string, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || !editing) return
-    setUploadingVariant(option)
+    setUploadingVariant(key)
     setError('')
     try {
       const url = await uploadFile(file)
-      upsertVariant(option, { image: url })
+      updateOption(key, { image: url })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'No pudimos subir la imagen.')
     } finally {
       setUploadingVariant(null)
       event.target.value = ''
     }
-  }
-
-  function handleRemoveVariantImage(option: string) {
-    setEditing((current) => current && { ...current, variantImages: current.variantImages.filter((entry) => entry.option !== option) })
   }
 
   async function handleSaveCustomer(event: FormEvent<HTMLFormElement>) {
@@ -396,20 +516,61 @@ export function AdminPanel() {
     await withBusy(() => saveContent({ data: contentDraft }))
   }
 
+  // ─── Compras (reponer) ───
+  function openPurchase(product?: Product) {
+    setNotice('')
+    setError('')
+    setEditingPurchase(purchaseDraftFor(product))
+  }
+
+  function updatePurchaseLine(index: number, patch: Partial<PurchaseLine>) {
+    setEditingPurchase((current) => current && { ...current, lines: current.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)) })
+  }
+
   async function handleSavePurchase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editingPurchase) return
+    const lines = editingPurchase.lines
+      .map((line) => ({ ...line, unitCost: line.unitCost !== '' ? line.unitCost : editingPurchase.sameCost }))
+      .filter((line) => Number(line.quantity) > 0)
+    if (!lines.length) { setError('Pon cuántas unidades compraste (al menos 1).'); return }
+    if (lines.some((line) => line.unitCost === '' || Number(line.unitCost) < 0)) { setError('Pon el costo por unidad de cada compra.'); return }
+    const draft = editingPurchase
     await withBusy(async () => {
-      await recordPurchase({ data: {
-        productId: Number(editingPurchase.productId),
-        quantity: Math.round(Number(editingPurchase.quantity || 0)),
-        unitCost: Math.round(Number(editingPurchase.unitCost || 0) * 100),
-        notes: editingPurchase.notes,
+      const result = await recordPurchase({ data: {
+        productId: Number(draft.productId),
+        notes: draft.notes,
+        lines: lines.map((line) => ({ option: line.option, quantity: Math.round(Number(line.quantity)), unitCost: cents(line.unitCost) })),
       } })
       setEditingPurchase(null)
+      setNotice(result.lots > 1 ? `Listo: se registraron ${result.lots} compras (una por opción) por ${money(result.total)}.` : `Listo: compra registrada por ${money(result.total)}.`)
     })
   }
 
+  function confirmDeletePurchase(purchase: Purchase) {
+    const sold = purchase.quantity - purchase.remainingQuantity
+    const message = sold > 0
+      ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan (del inventario y del Capital usado). ¿Continuar?`
+      : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del inventario y ${money(purchase.totalCost)} vuelven al Capital disponible.`
+    if (!window.confirm(message)) return
+    withBusy(async () => {
+      const result = await deletePurchase({ data: purchase.id })
+      if (result.adjustByHand) setNotice('Compra borrada. Como era una compra sin opción, revisa en «Editar» cuántas quedan de cada opción.')
+    })
+  }
+
+  async function handleSplit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!splitDraft) return
+    const draft = splitDraft
+    await withBusy(async () => {
+      await splitPurchase({ data: { id: draft.purchase.id, parts: Object.entries(draft.parts).map(([option, quantity]) => ({ option, quantity: Math.round(Number(quantity || 0)) })) } })
+      setSplitDraft(null)
+      setNotice('Listo: la compra quedó repartida. Ahora cada opción sale con su propio costo.')
+    })
+  }
+
+  // ─── Pedidos ───
   async function handleSaveOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!editingOrder) return
@@ -450,8 +611,10 @@ export function AdminPanel() {
     })
   }
 
+  // ─── Venta por fuera ───
   function openSale(product?: Product) {
     setNotice('')
+    setError('')
     setSaleDraft({ customerName: '', phone: '', notes: '', paymentStatus: 'Pagado', lines: [emptySaleLine(product)] })
   }
 
@@ -468,10 +631,10 @@ export function AdminPanel() {
         phone: saleDraft.phone,
         notes: saleDraft.notes,
         paymentStatus: saleDraft.paymentStatus,
-        items: saleDraft.lines.map((line) => ({ productId: Number(line.productId), option: line.option, quantity: Math.round(Number(line.quantity || 0)), price: Math.round(Number(line.price || 0) * 100) })),
+        items: saleDraft.lines.map((line) => ({ productId: Number(line.productId), option: line.option, quantity: Math.round(Number(line.quantity || 0)), price: cents(line.price) })),
       } })
       setSaleDraft(null)
-      setNotice(`Venta ${result.orderNumber} registrada por ${money(result.total)}. Ya se descontó del stock y cuenta en Finanzas.`)
+      setNotice(`Venta ${result.orderNumber} registrada por ${money(result.total)}. Ya se descontó del inventario y cuenta en Finanzas.`)
     })
   }
 
@@ -482,7 +645,7 @@ export function AdminPanel() {
       await recordExpense({ data: {
         type: editingExpense.type,
         description: editingExpense.description,
-        amount: Math.round(Number(editingExpense.amount || 0) * 100),
+        amount: cents(editingExpense.amount),
       } })
       setEditingExpense(null)
     })
@@ -490,7 +653,7 @@ export function AdminPanel() {
 
   async function handleSaveFinanceSettings() {
     await withBusy(() => saveContent({ data: {
-      capitalInicial: String(Math.round(Number(financeSettings.capitalInicial || 0) * 100)),
+      capitalInicial: String(cents(financeSettings.capitalInicial)),
       reinvestPercent: String(Math.min(100, Math.max(0, Math.round(Number(financeSettings.reinvestPercent || 0))))),
     } }))
   }
@@ -515,9 +678,15 @@ export function AdminPanel() {
 
   if (!data) return <div className="admin-loading">Cargando panel…</div>
 
-  const filteredProducts = data.products.filter((product) => product.name.toLowerCase().includes(query.toLowerCase()))
+  const productById = new Map(data.products.map((product) => [product.id, product]))
+  const lotsByProduct = new Map<number, Purchase[]>()
+  for (const purchase of data.purchases) lotsByProduct.set(purchase.productId, [...(lotsByProduct.get(purchase.productId) ?? []), purchase])
+  const statusById = new Map<number, LotStatus>()
+  for (const [productId, lots] of lotsByProduct) for (const [id, status] of lotStatuses(lots, productById.get(productId))) statusById.set(id, status)
+
+  const filteredProducts = data.products.filter((product) => `${product.name} ${product.options}`.toLowerCase().includes(query.toLowerCase()))
   const filteredOrders = data.orders.filter((order) => `${order.orderNumber} ${order.customerName} ${order.phone}`.toLowerCase().includes(query.toLowerCase()))
-  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.notes}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
+  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.option} ${purchase.notes}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
   const filteredCustomers = data.customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.email}`.toLowerCase().includes(query.toLowerCase()))
   const pendingOrders = data.orders.filter((order) => order.status === 'Pendiente').length
   const outOfStock = data.products.filter((product) => product.stock === 0).length
@@ -540,9 +709,8 @@ export function AdminPanel() {
   const trashTotal = data.trash.products.length + data.trash.orders.length + data.trash.customers.length + data.trash.images.length
 
   // Finanzas: todo se calcula a partir de pedidos pagados + compras +
-  // gastos registrados, igual espíritu que el "Resumen" del Excel de
-  // Yeilin pero automático. `cost` en cada item del pedido es una copia
-  // del costo promedio del producto al momento de la venta.
+  // gastos registrados. `cost` en cada línea de un pedido es lo que costó
+  // esa unidad (sale del lote de compra del que se vendió).
   // Un pedido cancelado no cuenta aunque haya quedado marcado "Pagado"
   // (por ejemplo, si se le devolvió el dinero al cliente).
   const paidOrders = data.orders.filter((order) => order.paymentStatus === 'Pagado' && order.status !== 'Cancelado')
@@ -563,16 +731,31 @@ export function AdminPanel() {
   const reinversion = Math.round((gananciaBruta * reinvestPercent) / 100)
   const paraTi = gananciaBruta - reinversion
   const disponibleRetirar = paraTi - gastosPersonales
+  const inventoryValue = data.purchases.reduce((sum, purchase) => sum + purchase.remainingQuantity * purchase.unitCost, 0)
 
   const TABS: Array<{ id: Tab; label: string; icon: ComponentType<{ size?: number }> }> = [
-    { id: 'resumen', label: 'Resumen', icon: LayoutDashboard },
+    { id: 'resumen', label: 'Inicio', icon: LayoutDashboard },
+    { id: 'catalogo', label: 'Productos', icon: Package },
+    { id: 'pedidos', label: `Pedidos${pendingOrders ? ` (${pendingOrders})` : ''}`, icon: ListOrdered },
     { id: 'finanzas', label: 'Finanzas', icon: Wallet },
-    { id: 'catalogo', label: 'Catálogo', icon: Package },
-    { id: 'pedidos', label: 'Pedidos', icon: ListOrdered },
     { id: 'clientes', label: 'Clientes', icon: Users },
-    { id: 'contenido', label: 'Contenido', icon: Pencil },
+    { id: 'contenido', label: 'Textos', icon: Pencil },
     { id: 'papelera', label: `Papelera${trashTotal ? ` (${trashTotal})` : ''}`, icon: Trash2 },
   ]
+
+  const goTab = (id: Tab) => { setTab(id); setQuery(''); setCatalogFilter('todos'); setCatalogCategory(''); setNotice('') }
+
+  // ─── Datos para los formularios abiertos ───
+  const purchaseProduct = editingPurchase ? productById.get(Number(editingPurchase.productId)) : undefined
+  const purchaseTracking = purchaseProduct ? tracksOptionStock(purchaseProduct) : false
+  const purchaseTotal = editingPurchase
+    ? editingPurchase.lines.reduce((sum, line) => sum + Math.round(Number(line.quantity || 0)) * cents(line.unitCost !== '' ? line.unitCost : editingPurchase.sameCost), 0)
+    : 0
+  const lotsProduct = lotsProductId ? productById.get(lotsProductId) : undefined
+  const lotsOfProduct = lotsProduct ? [...(lotsByProduct.get(lotsProduct.id) ?? [])].sort(byFifo) : []
+  const editingSum = editing ? editing.options.reduce((sum, option) => sum + Math.max(0, Math.round(Number(option.stock || 0))), 0) : 0
+  const editingOriginal = editing?.id ? productById.get(editing.id) : undefined
+  const modalOpen = Boolean(editing || editingCustomer || editingOrder || editingPurchase || editingExpense || saleDraft || splitDraft || lotsProduct)
 
   return (
     <div className="admin-shell">
@@ -580,7 +763,7 @@ export function AdminPanel() {
         <span className="drawer-kicker">JB TECH STORE</span>
         <h1>Panel admin</h1>
         <nav>
-          {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setQuery(''); setCatalogFilter('todos'); setCatalogCategory('') }}><Icon size={17} />{label}</button>)}
+          {TABS.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => goTab(id)}><Icon size={17} />{label}</button>)}
         </nav>
         <div className="admin-sidebar-footer">
           <Link to="/"><ChevronLeft size={15} />Ver la tienda</Link>
@@ -589,19 +772,22 @@ export function AdminPanel() {
       </aside>
 
       <main className="admin-main">
-        {error && <p className="form-error admin-error">{error}</p>}
+        {error && !modalOpen && <p className="form-error admin-error">{error}</p>}
         {notice && <p className="admin-notice"><Check size={15} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Cerrar"><X size={14} /></button></p>}
 
         {tab === 'resumen' && (
           <section>
-            <h2>Resumen</h2>
+            <h2>Inicio</h2>
+            <div className="quick-actions">
+              <button type="button" onClick={() => openSale()}><ShoppingCart size={20} /><span>Registrar venta</span></button>
+              <button type="button" onClick={() => openPurchase()}><ShoppingBag size={20} /><span>Registrar compra</span></button>
+              <button type="button" onClick={() => { goTab('catalogo'); setEditing(emptyDraft()) }}><Plus size={20} /><span>Nuevo producto</span></button>
+            </div>
             <div className="admin-cards">
-              <div className="admin-card"><span>Productos activos</span><strong>{data.products.filter((product) => product.active).length}</strong></div>
-              <div className="admin-card"><span>Agotados</span><strong>{outOfStock}</strong></div>
               <div className="admin-card"><span>Pedidos pendientes</span><strong>{pendingOrders}</strong></div>
-              <div className="admin-card"><span>Clientes</span><strong>{data.customers.length}</strong></div>
               <div className="admin-card"><span>Por cobrar ({porCobrarOrders.length})</span><strong>{money(porCobrar)}</strong></div>
-              <div className="admin-card"><span>Stock bajo (≤3)</span><strong>{lowStock.length}</strong></div>
+              <div className="admin-card"><span>Productos agotados</span><strong>{outOfStock}</strong></div>
+              <div className="admin-card"><span>Quedan pocos (≤3)</span><strong>{lowStock.length}</strong></div>
             </div>
             {lowStock.length > 0 && <>
               <h3>Quedan pocas unidades</h3>
@@ -609,7 +795,7 @@ export function AdminPanel() {
                 {lowStock.slice(0, 8).map((product) => <div className="admin-row admin-row-product" key={product.id}>
                   <img src={product.image || '/logo.png'} alt="" />
                   <div><strong>{product.name}</strong><span>Quedan {product.stock}</span></div>
-                  <button className="ghost-button" onClick={() => { setTab('finanzas'); setEditingPurchase({ ...emptyPurchaseDraft(), productId: String(product.id) }) }}>Reponer</button>
+                  <button className="ghost-button" onClick={() => openPurchase(product)}>Reponer</button>
                 </div>)}
               </div>
             </>}
@@ -627,96 +813,90 @@ export function AdminPanel() {
 
         {tab === 'finanzas' && (
           <section>
-            <div className="admin-section-head">
-              <h2>Finanzas</h2>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="primary-button" onClick={() => openSale()}><ShoppingCart size={16} />Registrar venta</button>
-                <button className="primary-button" onClick={() => setEditingExpense(emptyExpenseDraft())}><Plus size={16} />Registrar gasto</button>
-                <button className="primary-button" onClick={() => setEditingPurchase(emptyPurchaseDraft())}><ShoppingBag size={16} />Registrar compra</button>
-              </div>
+            <h2>Finanzas</h2>
+            <div className="quick-actions">
+              <button type="button" onClick={() => openSale()}><ShoppingCart size={20} /><span>Registrar venta</span></button>
+              <button type="button" onClick={() => openPurchase()}><ShoppingBag size={20} /><span>Registrar compra</span></button>
+              <button type="button" onClick={() => setEditingExpense(emptyExpenseDraft())}><Plus size={20} /><span>Registrar gasto</span></button>
             </div>
 
-            <div className="content-group">
-              <h3>Configuración</h3>
+            <div className="money-hero">
+              <div className="money-card"><span>Dinero del negocio</span><strong>{money(capitalDisponible)}</strong><small>Lo que hay para comprar mercancía</small></div>
+              <div className="money-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong><small>De las ventas ya pagadas</small></div>
+              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia, menos tus gastos personales</small></div>
+              <div className="money-card"><span>Mercancía en existencia</span><strong>{money(inventoryValue)}</strong><small>Lo que costó lo que todavía no se ha vendido</small></div>
+            </div>
+            {porCobrar > 0 && <p className="admin-hint"><AlertTriangle size={14} />Te deben {money(porCobrar)} de {porCobrarOrders.length} {porCobrarOrders.length === 1 ? 'pedido' : 'pedidos'} sin pagar. Cuando los marques «Pagado» se suman aquí.</p>}
+            {uncostedProducts.length > 0 && (
+              <p className="form-error">
+                {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en «Editar» y regístralas con «Reponer». <button type="button" className="link-button" onClick={() => { goTab('catalogo'); setCatalogFilter('sincosto') }}>Ver cuáles son</button>
+              </p>
+            )}
+
+            <Collapsible title="Ver todas las cuentas (cómo se calcula)">
+              <div className="admin-cards">
+                <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
+                <div className="admin-card"><span>Gastado en compras</span><strong>{money(capitalUsado)}</strong></div>
+                <div className="admin-card"><span>Recuperado con ventas</span><strong>{money(capitalRecuperado)}</strong></div>
+                <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
+                <div className="admin-card"><span>Vendido (pagado)</span><strong>{money(ingresos)}</strong></div>
+                <div className="admin-card"><span>Costo de lo vendido</span><strong>{money(costoVentas)}</strong></div>
+                <div className="admin-card"><span>Reinversión ({reinvestPercent}%)</span><strong>{money(reinversion)}</strong></div>
+                <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
+                <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
+              </div>
+              <p className="admin-hint">Dinero del negocio = capital inicial − compras + lo recuperado al vender − gastos del negocio. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
+            </Collapsible>
+
+            <div className="seg-tabs">
+              <button type="button" className={financeView === 'compras' ? 'active' : ''} onClick={() => setFinanceView('compras')}>Compras ({data.purchases.length})</button>
+              <button type="button" className={financeView === 'gastos' ? 'active' : ''} onClick={() => setFinanceView('gastos')}>Gastos ({data.expenses.length})</button>
+            </div>
+
+            {financeView === 'compras' && <>
+              <p className="admin-hint"><Layers size={14} />Cada compra es un lote con su costo. Al vender, sale primero del lote más viejo («Se vende ahora»); cuando se acaba, sigue el próximo.</p>
+              <label className="search-field admin-search"><Search size={16} /><input value={purchaseQuery} onChange={(event) => { setPurchaseQuery(event.target.value); setPurchaseLimit(15) }} placeholder="Buscar compra por producto, opción o nota..." /></label>
+              <div className="admin-table">
+                {filteredPurchases.slice(0, purchaseLimit).map((purchase) => (
+                  <LotRow key={purchase.id} lot={purchase} status={statusById.get(purchase.id) ?? 'espera'} showProduct general={!purchase.option && Boolean(productById.get(purchase.productId)?.optionStock)} busy={busy} onDelete={() => confirmDeletePurchase(purchase)} />
+                ))}
+                {!filteredPurchases.length && <p className="admin-empty">{data.purchases.length ? 'Ninguna compra coincide.' : 'Todavía no has registrado compras.'}</p>}
+                {filteredPurchases.length > purchaseLimit && <button className="ghost-button" onClick={() => setPurchaseLimit((limit) => limit + 30)}>Ver más compras ({filteredPurchases.length - purchaseLimit} más)</button>}
+              </div>
+            </>}
+
+            {financeView === 'gastos' && (
+              <div className="admin-table">
+                {data.expenses.slice(0, expenseLimit).map((expense) => <div className="admin-row" key={expense.id}>
+                  <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}</span></div>
+                  <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : 'Personal'}</span>
+                  <strong>{money(expense.amount)}</strong>
+                  <div className="admin-row-actions">
+                    <button onClick={() => { if (window.confirm('¿Borrar este gasto?')) withBusy(() => deleteExpense({ data: expense.id })) }}><Trash2 size={15} /></button>
+                  </div>
+                </div>)}
+                {!data.expenses.length && <p className="admin-empty">Todavía no has registrado gastos.</p>}
+                {data.expenses.length > expenseLimit && <button className="ghost-button" onClick={() => setExpenseLimit((limit) => limit + 30)}>Ver más gastos ({data.expenses.length - expenseLimit} más)</button>}
+              </div>
+            )}
+
+            <Collapsible title="Configuración (capital inicial y % que se reinvierte)">
               <div className="form-row">
                 <label className="content-field"><span>Capital inicial (RD$)</span><input type="number" min={0} step="0.01" value={financeSettings.capitalInicial} onChange={(event) => setFinanceSettings((current) => ({ ...current, capitalInicial: event.target.value }))} /></label>
                 <label className="content-field"><span>% que se reinvierte</span><input type="number" min={0} max={100} value={financeSettings.reinvestPercent} onChange={(event) => setFinanceSettings((current) => ({ ...current, reinvestPercent: event.target.value }))} /></label>
               </div>
               <button className="primary-button" disabled={busy} onClick={handleSaveFinanceSettings}><Check size={16} />{busy ? 'Guardando…' : 'Guardar configuración'}</button>
-            </div>
-
-            <h3>Capital</h3>
-            <div className="admin-cards">
-              <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
-              <div className="admin-card"><span>Capital usado (compras)</span><strong>{money(capitalUsado)}</strong></div>
-              <div className="admin-card"><span>Capital recuperado (ventas)</span><strong>{money(capitalRecuperado)}</strong></div>
-              <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
-              <div className="admin-card"><span>Capital disponible</span><strong>{money(capitalDisponible)}</strong></div>
-            </div>
-
-            <h3>Ventas y ganancia</h3>
-            <div className="admin-cards">
-              <div className="admin-card"><span>Ingresos (pedidos pagados)</span><strong>{money(ingresos)}</strong></div>
-              <div className="admin-card"><span>Costo de ventas</span><strong>{money(costoVentas)}</strong></div>
-              <div className="admin-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong></div>
-              <div className="admin-card"><span>Reinversión ({reinvestPercent}%)</span><strong>{money(reinversion)}</strong></div>
-              <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
-              <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
-            </div>
-            <div className="admin-cards">
-              <div className="admin-card"><span>Disponible para retirar</span><strong>{money(disponibleRetirar)}</strong></div>
-              <div className="admin-card"><span>Por cobrar ({porCobrarOrders.length} pedidos)</span><strong>{money(porCobrar)}</strong></div>
-            </div>
-            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" (y que no estén cancelados). Un pedido sin pagar todavía no mueve el capital: aparece en "Por cobrar". Los gastos del negocio salen del Capital disponible; los gastos personales salen de "Para ti".</p>
-            {uncostedProducts.length > 0 && (
-              <p className="form-error">
-                {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades en stock sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en Catálogo y regístralas con «Registrar compra». <button type="button" className="link-button" onClick={() => { setTab('catalogo'); setQuery(''); setCatalogFilter('sincosto') }}>Ver cuáles son</button>
-              </p>
-            )}
-
-            <h3>Compras registradas ({data.purchases.length})</h3>
-            <label className="search-field admin-search"><Search size={16} /><input value={purchaseQuery} onChange={(event) => { setPurchaseQuery(event.target.value); setPurchaseLimit(15) }} placeholder="Buscar compra por producto o nota..." /></label>
-            <div className="admin-table">
-              {filteredPurchases.slice(0, purchaseLimit).map((purchase) => {
-                const sold = purchase.quantity - (purchase.remainingQuantity ?? 0)
-                return <div className="admin-row" key={purchase.id}>
-                  <div><strong>{purchase.productName}</strong><span>{purchase.quantity} × {money(purchase.unitCost)} · {dateFmt(purchase.createdAt)} · {sold <= 0 ? 'nada vendido aún' : purchase.remainingQuantity > 0 ? `vendidas ${sold}, quedan ${purchase.remainingQuantity}` : 'lote vendido completo'}{purchase.notes ? ` · ${purchase.notes}` : ''}</span></div>
-                  <strong>{money(purchase.totalCost)}</strong>
-                  <button className="icon-button" title="Eliminar compra (ej. si se registró mal)" disabled={busy || purchase.remainingQuantity <= 0} onClick={() => {
-                    const message = sold > 0
-                      ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan (del stock y del Capital usado). ¿Continuar?`
-                      : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del stock y ${money(purchase.totalCost)} vuelven al Capital disponible.`
-                    if (window.confirm(message)) withBusy(() => deletePurchase({ data: purchase.id }))
-                  }}><Trash2 size={15} /></button>
-                </div>
-              })}
-              {!filteredPurchases.length && <p className="admin-empty">{data.purchases.length ? 'Ninguna compra coincide.' : 'Todavía no has registrado compras.'}</p>}
-              {filteredPurchases.length > purchaseLimit && <button className="ghost-button" onClick={() => setPurchaseLimit((limit) => limit + 30)}>Ver más compras ({filteredPurchases.length - purchaseLimit} más)</button>}
-            </div>
-
-            <h3>Gastos registrados ({data.expenses.length})</h3>
-            <div className="admin-table">
-              {data.expenses.slice(0, expenseLimit).map((expense) => <div className="admin-row" key={expense.id}>
-                <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}</span></div>
-                <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : 'Personal'}</span>
-                <strong>{money(expense.amount)}</strong>
-                <div className="admin-row-actions">
-                  <button onClick={() => { if (window.confirm('¿Borrar este gasto?')) withBusy(() => deleteExpense({ data: expense.id })) }}><Trash2 size={15} /></button>
-                </div>
-              </div>)}
-              {!data.expenses.length && <p className="admin-empty">Todavía no has registrado gastos.</p>}
-              {data.expenses.length > expenseLimit && <button className="ghost-button" onClick={() => setExpenseLimit((limit) => limit + 30)}>Ver más gastos ({data.expenses.length - expenseLimit} más)</button>}
-            </div>
+            </Collapsible>
           </section>
         )}
 
         {tab === 'catalogo' && (
           <section>
             <div className="admin-section-head">
-              <h2>Catálogo</h2>
-              <button className="primary-button" onClick={() => setEditing(emptyDraft())}><Plus size={16} />Nuevo producto</button>
+              <h2>Productos</h2>
+              <button className="primary-button" onClick={() => { setError(''); setEditing(emptyDraft()) }}><Plus size={16} />Nuevo producto</button>
             </div>
-            <label className="search-field admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar producto..." /></label>
+            <label className="search-field admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar producto u opción..." /></label>
             <div className="cat-filters">
               {CATALOG_FILTERS.map((filter) => {
                 const count = data.products.filter((product) => matchesCatalogFilter(product, filter.id)).length
@@ -731,27 +911,43 @@ export function AdminPanel() {
             <div className="admin-table">
               {catalogProducts.map((product) => {
                 const options = parseOptions(product.options)
-                const margin = product.price > 0 && product.cost > 0 ? Math.round(((product.price - product.cost) / product.price) * 100) : null
+                const tracking = tracksOptionStock(product)
+                const range = priceRange(product)
+                const ranged = range.min !== range.max
+                const margin = !ranged && product.price > 0 && product.cost > 0 ? Math.round(((product.price - product.cost) / product.price) * 100) : null
                 const noCost = uncostedIds.has(product.id)
+                const lotCount = lotsByProduct.get(product.id)?.length ?? 0
                 return <div className={`prod-row ${!product.active ? 'is-hidden' : ''}`} key={product.id}>
                   <img src={product.image || '/logo.png'} alt="" loading="lazy" />
                   <div className="prod-row-main">
                     <div className="prod-row-top">
                       <strong>{product.name}</strong>
-                      <div className="prod-row-price">{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<b>{money(product.price)}</b></div>
+                      <div className="prod-row-price">
+                        {ranged ? <><small>desde</small><b>{money(range.min)}</b></> : <>{product.originalPrice > product.price && <s>{money(product.originalPrice)}</s>}<b>{money(product.price)}</b></>}
+                      </div>
                     </div>
-                    <span className="prod-row-cat">{product.category}{options.length > 0 ? ` · ${options.length} ${options.length === 1 ? 'opción' : 'opciones'}` : ''}{product.variantImages?.length > 0 ? ` · ${product.variantImages.length} con foto` : ''}</span>
+                    <span className="prod-row-cat">{product.category}{options.length > 0 ? ` · ${options.length} ${options.length === 1 ? 'opción' : 'opciones'}` : ''}</span>
                     <div className="prod-row-pills">
-                      <span className={`pill ${product.stock === 0 ? 'pill-bad' : product.stock <= 3 ? 'pill-warn' : 'pill-ok'}`}>{product.stock === 0 ? 'Agotado' : `${product.stock} en stock`}</span>
-                      {noCost ? <span className="pill pill-bad">Sin costo registrado</span> : <span className="pill">Costo {money(product.cost)}</span>}
+                      <span className={`pill ${product.stock === 0 ? 'pill-bad' : product.stock <= 3 ? 'pill-warn' : 'pill-ok'}`}>{product.stock === 0 ? 'Agotado' : `${product.stock} en existencia`}</span>
+                      {noCost ? <span className="pill pill-bad">Sin costo registrado</span> : !tracking && <span className="pill">Costo {money(product.cost)}</span>}
                       {margin !== null && <span className={`pill ${margin < 15 ? 'pill-warn' : ''}`}>Margen {margin}%</span>}
+                      {tracking && <span className="pill pill-info">Cantidad por opción</span>}
                       {!product.active && <span className="pill">Oculto</span>}
                     </div>
+                    {tracking && (
+                      <p className="prod-row-options">
+                        {options.map((option) => {
+                          const units = optionStock(product, option)
+                          return <span key={option} className={units === 0 ? 'is-out' : ''}>{option}: <b>{units}</b>{hasOwnPrice(product, option) ? ` · ${money(optionPrice(product, option))}` : ''}</span>
+                        })}
+                      </p>
+                    )}
                   </div>
                   <div className="prod-row-actions">
-                    <button type="button" onClick={() => setEditing(toDraft(product))}><Pencil size={14} />Editar</button>
-                    <button type="button" onClick={() => setEditingPurchase({ ...emptyPurchaseDraft(), productId: String(product.id) })}><ShoppingBag size={14} />Reponer</button>
+                    <button type="button" onClick={() => { setError(''); setEditing(toDraft(product)) }}><Pencil size={14} />Editar</button>
+                    <button type="button" onClick={() => openPurchase(product)}><ShoppingBag size={14} />Reponer</button>
                     <button type="button" disabled={product.stock <= 0} onClick={() => openSale(product)}><ShoppingCart size={14} />Vender</button>
+                    <button type="button" disabled={!lotCount} onClick={() => setLotsProductId(product.id)}><Layers size={14} />Compras</button>
                     <button type="button" className="danger" aria-label="Enviar a la papelera" onClick={() => { if (window.confirm(`¿Enviar «${product.name}» a la papelera? Deja de verse en la tienda; lo puedes restaurar durante 30 días.`)) withBusy(() => deleteProduct({ data: product.id })) }}><Trash2 size={14} /></button>
                   </div>
                 </div>
@@ -767,21 +963,24 @@ export function AdminPanel() {
               <h2>Pedidos</h2>
               <button className="primary-button" onClick={() => openSale()}><ShoppingCart size={16} />Registrar venta por fuera</button>
             </div>
-            <p className="admin-hint">¿Vendiste algo en persona o por WhatsApp? Regístralo aquí con «Registrar venta por fuera»: se descuenta del stock y se suma a Finanzas, sin tener que hacer la compra en la tienda.</p>
+            <p className="admin-hint">¿Vendiste algo en persona o por WhatsApp? Regístralo con «Registrar venta por fuera»: se descuenta del inventario y se suma a Finanzas.</p>
             <label className="search-field admin-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por número, cliente o teléfono..." /></label>
             <div className="admin-table">
               {filteredOrders.map((order) => <div className="admin-order" key={order.id}>
                 <div className="admin-order-head">
                   <div><strong>{order.orderNumber}</strong><span>{dateFmt(order.createdAt)}</span></div>
                   <div className="admin-order-actions">
-                    <button className="icon-button" title="Editar pedido" onClick={() => setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item })), discount: order.discount })}><Pencil size={15} /></button>
+                    <button className="icon-button" title="Editar pedido" onClick={() => { setError(''); setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item, option: item.option ?? optionFromName(item.name) })), discount: order.discount }) }}><Pencil size={15} /></button>
                     <button className="icon-button" title="Descargar factura (PDF)" disabled={busy} onClick={() => handleDownloadInvoice(order)}><Download size={15} /></button>
                     <button className="icon-button" title="Compartir factura" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
                     <button className="icon-button" title="Enviar a la papelera" onClick={() => { if (window.confirm(order.status === 'Cancelado' ? '¿Enviar este pedido a la papelera?' : '¿Enviar este pedido a la papelera?\n\nOjo: esto NO devuelve las unidades al inventario. Si el pedido no se concretó, primero cámbialo a "Cancelado" (eso sí las devuelve).')) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
                   </div>
                 </div>
                 <p className="admin-order-customer">{order.customerName} · {order.phone}{order.address ? ` · ${order.address}` : ''}</p>
-                <ul className="admin-order-items">{order.items.map((item, index) => <li key={`${item.id}-${index}`}>{item.quantity}× {item.name} <span>{money(item.price * item.quantity)}</span></li>)}</ul>
+                <ul className="admin-order-items">{order.items.map((item, index) => <li key={`${item.id}-${index}`}>
+                  <div>{item.quantity}× {item.name}<small>Costó {money(item.cost)} c/u · ganancia {money((item.price - item.cost) * item.quantity)}</small></div>
+                  <span>{money(item.price * item.quantity)}</span>
+                </li>)}</ul>
                 <div className="admin-order-foot">
                   <select value={order.status} disabled={busy} onChange={(event) => {
                     const next = event.target.value
@@ -827,7 +1026,7 @@ export function AdminPanel() {
         {tab === 'contenido' && (
           <section>
             <div className="admin-section-head">
-              <h2>Contenido del sitio</h2>
+              <h2>Textos de la tienda</h2>
               <button className="primary-button" disabled={busy} onClick={handleSaveContent}><Check size={16} />{busy ? 'Guardando…' : 'Guardar cambios'}</button>
             </div>
             {CONTENT_GROUPS.map((group) => <div className="content-group" key={group.title}>
@@ -909,62 +1108,87 @@ export function AdminPanel() {
         <button className="modal-close icon-button" onClick={() => setEditing(null)}><X /></button>
         <h2>{editing.id ? 'Editar producto' : 'Nuevo producto'}</h2>
         <form className="product-form" onSubmit={handleSaveProduct}>
-          <label>Foto del producto
+          <fieldset className="form-section">
+            <legend>1 · Foto y nombre</legend>
             <div className="image-upload">
               {editing.image && <img src={editing.image} alt="" />}
-              <label className="upload-button">{uploading ? 'Subiendo…' : <><Upload size={15} />Subir imagen</>}<input type="file" accept="image/*" hidden onChange={handleImageChange} disabled={uploading} /></label>
+              <label className="upload-button">{uploading ? 'Subiendo…' : <><Upload size={15} />{editing.image ? 'Cambiar foto principal' : 'Subir foto principal'}</>}<input type="file" accept="image/*" hidden onChange={handleImageChange} disabled={uploading} /></label>
             </div>
-          </label>
-          <label>Nombre<input required value={editing.name} onChange={(event) => setEditing((current) => current && { ...current, name: event.target.value })} /></label>
-          <label>Categoría
-            <select value={editing.category} onChange={(event) => setEditing((current) => current && { ...current, category: event.target.value })}>
-              {CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
-            </select>
-          </label>
-          <label>Descripción<textarea rows={3} value={editing.description} onChange={(event) => setEditing((current) => current && { ...current, description: event.target.value })} /></label>
-          <label>Opciones (colores/diseños, separadas por coma — déjalo vacío si no aplica)<input value={editing.options} onChange={(event) => setEditing((current) => current && { ...current, options: event.target.value })} placeholder="Ej. Negro, Azul, Transparente" /></label>
-          {parseOptions(editing.options).length > 0 && (
-            <div className="variant-images">
-              <p className="content-hint" style={{ margin: '0 0 4px' }}>Foto y descripción por opción (opcional). Si una opción se deja sin foto, en la tienda se usa la foto general de arriba.</p>
-              {parseOptions(editing.options).map((option) => {
-                const entry = editing.variantImages.find((item) => item.option === option)
-                return (
-                  <div className="variant-image-row" key={option}>
-                    <strong>{option}</strong>
-                    <div className="image-upload">
-                      {entry?.image && <img src={entry.image} alt={option} />}
-                      <label className="upload-button">{uploadingVariant === option ? 'Subiendo…' : <><Upload size={14} />{entry?.image ? 'Cambiar foto' : 'Subir foto'}</>}<input type="file" accept="image/*" hidden onChange={(event) => handleVariantImageChange(option, event)} disabled={uploadingVariant === option} /></label>
-                      {entry && <button type="button" className="variant-remove-button" onClick={() => handleRemoveVariantImage(option)}>Quitar</button>}
-                    </div>
-                    <input value={entry?.description ?? ''} onChange={(event) => upsertVariant(option, { description: event.target.value })} placeholder={`Descripción para "${option}" (opcional)`} />
-                  </div>
-                )
-              })}
+            <label>Nombre<input required value={editing.name} onChange={(event) => setEditing((current) => current && { ...current, name: event.target.value })} placeholder="Ej. Cover para iPhone 12" /></label>
+            <label>Categoría
+              <select value={editing.category} onChange={(event) => setEditing((current) => current && { ...current, category: event.target.value })}>
+                {CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+            </label>
+            <label>Descripción<textarea rows={3} value={editing.description} onChange={(event) => setEditing((current) => current && { ...current, description: event.target.value })} /></label>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>2 · Precio</legend>
+            <div className="form-row">
+              <label>Precio de venta (RD$)<input required type="number" inputMode="decimal" min={0} step="0.01" value={editing.price} onChange={(event) => setEditing((current) => current && { ...current, price: event.target.value })} /></label>
+              <label>Precio anterior (opcional)<input type="number" inputMode="decimal" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} placeholder="Para mostrar oferta" /></label>
             </div>
-          )}
-          <div className="form-row">
-            <label>Precio de venta (RD$)<input required type="number" min={0} step="0.01" value={editing.price} onChange={(event) => setEditing((current) => current && { ...current, price: event.target.value })} /></label>
-            <label>Precio anterior (RD$, opcional)<input type="number" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} /></label>
-          </div>
-          {editing.id ? (
-            <>
-              <label>Existencias<input required type="number" min={0} value={editing.stock} onChange={(event) => setEditing((current) => current && { ...current, stock: event.target.value })} /></label>
-              <p className="admin-hint"><AlertTriangle size={14} />Este número reemplaza la cantidad tal cual (no suma ni resta). Úsalo solo para corregir un conteo — no mueve el capital ni el costo promedio. Para sumar inventario nuevo usa «Registrar compra» en la pestaña Finanzas.</p>
-            </>
-          ) : (
-            <>
-              <label>Existencias<input type="number" value="0" disabled /></label>
-              <p className="admin-hint"><AlertTriangle size={14} />Los productos nuevos siempre inician en 0. Guarda el producto y luego usa «Registrar compra» (pestaña Finanzas) para sumarle las unidades — así el costo también queda registrado y no se duplica el inventario.</p>
-            </>
-          )}
-          <div className="form-checks">
-            <label><input type="checkbox" checked={editing.featured} onChange={(event) => setEditing((current) => current && { ...current, featured: event.target.checked })} />Destacado</label>
-            <label><input type="checkbox" checked={editing.isNew} onChange={(event) => setEditing((current) => current && { ...current, isNew: event.target.checked })} />Nuevo</label>
-            <label><input type="checkbox" checked={editing.bestSeller} onChange={(event) => setEditing((current) => current && { ...current, bestSeller: event.target.checked })} />Más vendido</label>
-            <label><input type="checkbox" checked={editing.active} onChange={(event) => setEditing((current) => current && { ...current, active: event.target.checked })} />Visible en la tienda</label>
-          </div>
+            <p className="content-hint">Si las opciones de abajo tienen un precio distinto, se lo pones a cada una. Las que no tengan precio propio usan este.</p>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>3 · Opciones (colores, diseños o modelos)</legend>
+            <p className="content-hint">Déjalo vacío si el producto es uno solo. Si en esta misma tarjeta hay varios (ej. 10 diseños de cover), agrégalos aquí — cada uno puede tener su foto, su precio y su cantidad.</p>
+            {editing.options.length > 0 && (
+              <label className="switch-row">
+                <input type="checkbox" checked={editing.optionStock} onChange={(event) => setEditing((current) => current && { ...current, optionStock: event.target.checked })} />
+                <span><b>Cada opción tiene su propia cantidad</b><small>Recomendado. Así sabes cuántas quedan de cada una, y cada compra y venta se cuenta por opción con su propio costo.</small></span>
+              </label>
+            )}
+            {editing.options.map((option, index) => (
+              <div className="option-card" key={option.key}>
+                <div className="option-card-head">
+                  <label className="option-thumb" title="Foto de esta opción">
+                    {uploadingVariant === option.key ? <span>…</span> : option.image ? <img src={option.image} alt="" /> : <Upload size={16} />}
+                    <input type="file" accept="image/*" hidden onChange={(event) => handleVariantImageChange(option.key, event)} disabled={uploadingVariant === option.key} />
+                  </label>
+                  <input className="option-name" value={option.name} onChange={(event) => updateOption(option.key, { name: event.target.value })} placeholder={`Opción ${index + 1} (ej. negro/amarillo)`} aria-label="Nombre de la opción" />
+                  <button type="button" className="icon-button option-remove" aria-label="Quitar opción" onClick={() => { if (!option.originalName || window.confirm(`¿Quitar la opción «${option.originalName}»?`)) removeOption(option.key) }}><X size={16} /></button>
+                </div>
+                <div className="option-card-grid">
+                  <label>Precio<input type="number" inputMode="decimal" min={0} step="0.01" value={option.price} onChange={(event) => updateOption(option.key, { price: event.target.value })} placeholder={editing.price ? `Igual: ${money(cents(editing.price))}` : 'Igual al general'} /></label>
+                  {editing.optionStock && (
+                    <label>Cantidad<input type="number" inputMode="numeric" min={0} value={editing.id ? option.stock : '0'} disabled={!editing.id} onChange={(event) => updateOption(option.key, { stock: event.target.value })} /></label>
+                  )}
+                </div>
+                <input value={option.description} onChange={(event) => updateOption(option.key, { description: event.target.value })} placeholder="Descripción de esta opción (opcional)" aria-label="Descripción de la opción" />
+                {option.image && <button type="button" className="variant-remove-button" onClick={() => updateOption(option.key, { image: '' })}>Quitar foto</button>}
+              </div>
+            ))}
+            <button type="button" className="ghost-button add-option" onClick={() => setEditing((current) => current && { ...current, options: [...current.options, emptyOption()] })}><Plus size={15} />Agregar opción</button>
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>4 · Cantidad en existencia</legend>
+            {!editing.id ? (
+              <p className="admin-hint"><AlertTriangle size={14} />Un producto nuevo empieza en 0. Al guardar se abre «Reponer» para que pongas cuántas compraste y a cuánto — así el costo queda registrado.</p>
+            ) : editing.optionStock && editing.options.length > 0 ? (
+              <p className="option-total">Total: <b>{editingSum}</b> unidades (la suma de las opciones){editingOriginal && !editingOriginal.optionStock && editingOriginal.stock !== editingSum ? <span> · antes había {editingOriginal.stock} en total: reparte esa cantidad entre las opciones</span> : null}</p>
+            ) : (
+              <>
+                <label>Existencias<input required type="number" inputMode="numeric" min={0} value={editing.stock} onChange={(event) => setEditing((current) => current && { ...current, stock: event.target.value })} /></label>
+              </>
+            )}
+            {editing.id && <p className="content-hint">Estos números solo corrigen el conteo (no suman dinero ni costo). Para mercancía nueva usa «Reponer».</p>}
+          </fieldset>
+
+          <fieldset className="form-section">
+            <legend>5 · En la tienda</legend>
+            <div className="form-checks">
+              <label><input type="checkbox" checked={editing.active} onChange={(event) => setEditing((current) => current && { ...current, active: event.target.checked })} />Visible en la tienda</label>
+              <label><input type="checkbox" checked={editing.featured} onChange={(event) => setEditing((current) => current && { ...current, featured: event.target.checked })} />Destacado</label>
+              <label><input type="checkbox" checked={editing.isNew} onChange={(event) => setEditing((current) => current && { ...current, isNew: event.target.checked })} />Nuevo</label>
+              <label><input type="checkbox" checked={editing.bestSeller} onChange={(event) => setEditing((current) => current && { ...current, bestSeller: event.target.checked })} />Más vendido</label>
+            </div>
+          </fieldset>
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button full" disabled={busy || uploading}>{busy ? 'Guardando…' : 'Guardar producto'}</button>
+          <button className="primary-button full" disabled={busy || uploading || Boolean(uploadingVariant)}>{busy ? 'Guardando…' : 'Guardar producto'}</button>
         </form>
       </div></div>}
 
@@ -994,7 +1218,7 @@ export function AdminPanel() {
           </div>
           <label>Dirección<input value={editingOrder.address} onChange={(event) => setEditingOrder((current) => current && { ...current, address: event.target.value })} /></label>
           <label>Notas (opcional)<input value={editingOrder.notes} onChange={(event) => setEditingOrder((current) => current && { ...current, notes: event.target.value })} /></label>
-          <label>Productos del pedido</label>
+          <label>Productos del pedido <small className="order-edit-legend">nombre · cantidad · precio c/u</small></label>
           {editingOrder.items.map((item, index) => (
             <div className="order-edit-item" key={`${item.id}-${index}`}>
               <input value={item.name} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, name: event.target.value } : row) })} />
@@ -1019,37 +1243,122 @@ export function AdminPanel() {
 
       {editingPurchase && <div className="modal-wrap"><div className="modal-card">
         <button className="modal-close icon-button" onClick={() => setEditingPurchase(null)}><X /></button>
-        <h2>Registrar compra</h2>
-        <p>Suma las unidades al stock del producto y saca el dinero del Capital disponible. Si te equivocas, puedes borrarla desde «Compras registradas».</p>
+        <h2>Reponer (registrar compra)</h2>
+        <p>Pon cuántas compraste y a cuánto te salió cada una. Se suma a la existencia y se saca del dinero del negocio. Cada compra queda como un lote con su propio costo.</p>
         <form className="product-form" onSubmit={handleSavePurchase}>
           <label>Producto
-            <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...current, productId: event.target.value })}>
+            <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...purchaseDraftFor(productById.get(Number(event.target.value))), notes: current.notes })}>
               <option value="" disabled>Selecciona un producto</option>
-              {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((product) => <option key={product.id} value={product.id}>{product.name} (stock actual: {product.stock})</option>)}
+              {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((product) => <option key={product.id} value={product.id}>{product.name} (hay {product.stock})</option>)}
             </select>
           </label>
-          <div className="form-row">
-            <label>Cantidad comprada<input required type="number" min={1} value={editingPurchase.quantity} onChange={(event) => setEditingPurchase((current) => current && { ...current, quantity: event.target.value })} /></label>
-            <label>Costo por unidad (RD$)<input required type="number" min={0} step="0.01" value={editingPurchase.unitCost} onChange={(event) => setEditingPurchase((current) => current && { ...current, unitCost: event.target.value })} /></label>
-          </div>
-          <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
-          {Number(editingPurchase.quantity) > 0 && Number(editingPurchase.unitCost) >= 0 && editingPurchase.unitCost !== '' && (
-            <p className="order-edit-total">Total de la compra: <strong>{money(Math.round(Number(editingPurchase.quantity) * Number(editingPurchase.unitCost) * 100))}</strong> · Capital disponible después: <strong>{money(capitalDisponible - Math.round(Number(editingPurchase.quantity) * Number(editingPurchase.unitCost) * 100))}</strong></p>
+          {purchaseProduct && purchaseTracking ? (
+            <>
+              <label>Costo igual para todas (opcional)<input type="number" inputMode="decimal" min={0} step="0.01" value={editingPurchase.sameCost} onChange={(event) => setEditingPurchase((current) => current && { ...current, sameCost: event.target.value })} placeholder="Ej. 26 (se usa donde no pongas costo)" /></label>
+              <div className="restock-table">
+                <div className="restock-head"><span>Opción</span><span>Cant.</span><span>Costo c/u</span></div>
+                {editingPurchase.lines.map((line, index) => {
+                  const variant = purchaseProduct.variantImages?.find((entry) => entry.option === line.option)
+                  return <div className="restock-row" key={line.option}>
+                    <div className="restock-option">{variant?.image ? <img src={variant.image} alt="" /> : null}<span>{line.option}<small>hay {optionStock(purchaseProduct, line.option)}</small></span></div>
+                    <input type="number" inputMode="numeric" min={0} value={line.quantity} onChange={(event) => updatePurchaseLine(index, { quantity: event.target.value })} placeholder="0" aria-label={`Cantidad de ${line.option}`} />
+                    <input type="number" inputMode="decimal" min={0} step="0.01" value={line.unitCost} onChange={(event) => updatePurchaseLine(index, { unitCost: event.target.value })} placeholder={editingPurchase.sameCost || 'RD$'} aria-label={`Costo de ${line.option}`} />
+                  </div>
+                })}
+              </div>
+              <p className="content-hint">Deja en blanco las opciones que no compraste. Cada opción con cantidad queda como su propio lote.</p>
+            </>
+          ) : (
+            <>
+              <div className="form-row">
+                <label>Cantidad comprada<input required type="number" inputMode="numeric" min={1} value={editingPurchase.lines[0]?.quantity ?? ''} onChange={(event) => updatePurchaseLine(0, { quantity: event.target.value })} /></label>
+                <label>Costo por unidad (RD$)<input required type="number" inputMode="decimal" min={0} step="0.01" value={editingPurchase.lines[0]?.unitCost ?? ''} onChange={(event) => updatePurchaseLine(0, { unitCost: event.target.value })} /></label>
+              </div>
+              {purchaseProduct && parseOptions(purchaseProduct.options).length > 1 && <p className="admin-hint"><AlertTriangle size={14} />Este producto tiene opciones pero comparten una sola cantidad. Si cada una tiene su propia cantidad o costo, actívalo en «Editar» → «Cada opción tiene su propia cantidad».</p>}
+            </>
           )}
+          <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
+          {purchaseTotal > 0 && <p className="order-edit-total">Total de la compra: <strong>{money(purchaseTotal)}</strong> · Dinero del negocio después: <strong>{money(capitalDisponible - purchaseTotal)}</strong></p>}
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
+          <button className="primary-button full" disabled={busy || !editingPurchase.productId}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
         </form>
       </div></div>}
+
+      {lotsProduct && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setLotsProductId(null)}><X /></button>
+        <h2>Compras de {lotsProduct.name}</h2>
+        <p>Así sabes de cuál compra sale cada venta: siempre sale primero de la compra más vieja que todavía tenga unidades (la que dice «Se vende ahora»). Cuando esa se acaba, sigue la próxima.</p>
+        {(() => {
+          const statuses = lotStatuses(lotsOfProduct, lotsProduct)
+          const tracking = tracksOptionStock(lotsProduct)
+          const general = lotsOfProduct.filter((lot) => !lot.option)
+          if (!tracking) {
+            const next = nextLotFor(lotsOfProduct, lotsProduct, '')
+            return <>
+              {next && <p className="next-lot">La próxima venta sale a costo <b>{money(next.unitCost)}</b> (compra del {shortDate(next.createdAt)}).</p>}
+              <div className="admin-table">{lotsOfProduct.map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>
+            </>
+          }
+          return <>
+            {general.some((lot) => lot.remainingQuantity > 0) && (
+              <div className="lots-group lots-group-warn">
+                <h3>Compras sin opción asignada</h3>
+                <p className="content-hint">Son de antes de separar por opción: cualquier opción puede salir de aquí con este costo. Tócale «Repartir» y di cuántas son de cada opción, así cada una sale con su costo real.</p>
+                <div className="admin-table">{general.filter((lot) => lot.remainingQuantity > 0).map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} general busy={busy} onDelete={() => confirmDeletePurchase(lot)} onSplit={() => { setError(''); setSplitDraft({ purchase: lot, parts: {} }) }} />)}</div>
+              </div>
+            )}
+            {parseOptions(lotsProduct.options).map((option) => {
+              const lots = lotsOfProduct.filter((lot) => lot.option === option)
+              const next = nextLotFor(lotsOfProduct, lotsProduct, option)
+              return <div className="lots-group" key={option}>
+                <h3>{option} <small>hay {optionStock(lotsProduct, option)} · precio {money(optionPrice(lotsProduct, option))}</small></h3>
+                {next ? <p className="next-lot">Próxima venta sale a costo <b>{money(next.unitCost)}</b>{next.option ? '' : ' (de una compra sin opción)'}.</p> : <p className="content-hint">Sin compras con unidades.</p>}
+                {lots.length > 0 && <div className="admin-table">{lots.map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>}
+              </div>
+            })}
+          </>
+        })()}
+        {error && !splitDraft && <p className="form-error">{error}</p>}
+        <button className="primary-button full lots-restock" onClick={() => { const product = lotsProduct; setLotsProductId(null); openPurchase(product) }}><ShoppingBag size={16} />Reponer este producto</button>
+      </div></div>}
+
+      {splitDraft && (() => {
+        const product = productById.get(splitDraft.purchase.productId)
+        const options = product ? parseOptions(product.options) : []
+        const assigned = Object.values(splitDraft.parts).reduce((sum, value) => sum + Math.max(0, Math.round(Number(value || 0))), 0)
+        const target = splitDraft.purchase.remainingQuantity
+        return <div className="modal-wrap modal-top"><div className="modal-card">
+          <button className="modal-close icon-button" onClick={() => setSplitDraft(null)}><X /></button>
+          <h2>Repartir compra</h2>
+          <p>Compra del {shortDate(splitDraft.purchase.createdAt)}: quedan <b>{target}</b> a <b>{money(splitDraft.purchase.unitCost)}</b> c/u. Pon cuántas de esas son de cada opción. No cambia la cantidad ni el dinero: solo dice de cuál opción es cada una.</p>
+          <form className="product-form" onSubmit={handleSplit}>
+            <div className="restock-table">
+              {options.map((option) => (
+                <div className="restock-row restock-row-2" key={option}>
+                  <div className="restock-option"><span>{option}<small>hay {product ? optionStock(product, option) : 0}</small></span></div>
+                  <input type="number" inputMode="numeric" min={0} value={splitDraft.parts[option] ?? ''} placeholder="0" onChange={(event) => setSplitDraft((current) => current && { ...current, parts: { ...current.parts, [option]: event.target.value } })} aria-label={`Cantidad de ${option}`} />
+                </div>
+              ))}
+            </div>
+            <p className={`order-edit-total ${assigned === target ? 'is-ok' : ''}`}>Repartidas <strong>{assigned}</strong> de {target}</p>
+            {error && <p className="form-error">{error}</p>}
+            <button className="primary-button full" disabled={busy || assigned !== target}>{busy ? 'Guardando…' : 'Guardar reparto'}</button>
+          </form>
+        </div></div>
+      })()}
 
       {saleDraft && <div className="modal-wrap"><div className="modal-card">
         <button className="modal-close icon-button" onClick={() => setSaleDraft(null)}><X /></button>
         <h2>Registrar venta por fuera</h2>
-        <p>Para lo que vendiste en persona o por WhatsApp. Se descuenta del stock y cuenta en Finanzas igual que un pedido de la tienda. El precio lo pones tú (puede ser un precio especial).</p>
+        <p>Para lo que vendiste en persona o por WhatsApp. Se descuenta del inventario y cuenta en Finanzas igual que un pedido de la tienda. El precio lo pones tú (puede ser un precio especial).</p>
         <form className="product-form" onSubmit={handleSaveSale}>
           {saleDraft.lines.map((line, index) => {
             const product = data.products.find((item) => String(item.id) === line.productId)
             const options = product ? parseOptions(product.options) : []
-            const lineTotal = Math.round(Number(line.quantity || 0) * Number(line.price || 0) * 100)
+            const tracking = product ? tracksOptionStock(product) : false
+            const available = product ? optionStock(product, line.option) : 0
+            const lineTotal = Math.round(Number(line.quantity || 0)) * cents(line.price)
+            const listPrice = product ? optionPrice(product, line.option) : 0
             return <div className="sale-line" key={index}>
               <div className="sale-line-head">
                 <strong>Producto {saleDraft.lines.length > 1 ? index + 1 : ''}</strong>
@@ -1057,21 +1366,25 @@ export function AdminPanel() {
               </div>
               <select required value={line.productId} onChange={(event) => {
                 const next = data.products.find((item) => String(item.id) === event.target.value)
-                updateSaleLine(index, { productId: event.target.value, option: next ? (parseOptions(next.options)[0] ?? '') : '', price: next ? String(next.price / 100) : line.price })
+                const option = next ? firstSellableOption(next) : ''
+                updateSaleLine(index, { productId: event.target.value, option, price: next ? String(optionPrice(next, option) / 100) : line.price })
               }}>
                 <option value="" disabled>Selecciona un producto</option>
-                {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((item) => <option key={item.id} value={item.id} disabled={item.stock <= 0}>{item.name} (quedan {item.stock})</option>)}
+                {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((item) => <option key={item.id} value={item.id} disabled={item.stock <= 0}>{item.name} (hay {item.stock})</option>)}
               </select>
-              {options.length > 0 && (
-                <select value={line.option} onChange={(event) => updateSaleLine(index, { option: event.target.value })}>
-                  {options.map((option) => <option key={option} value={option}>{option}</option>)}
+              {options.length > 0 && product && (
+                <select value={line.option} onChange={(event) => updateSaleLine(index, { option: event.target.value, price: String(optionPrice(product, event.target.value) / 100) })}>
+                  {options.map((option) => {
+                    const units = optionStock(product, option)
+                    return <option key={option} value={option} disabled={tracking && units <= 0}>{option}{tracking ? ` (hay ${units})` : ''}{hasOwnPrice(product, option) ? ` · ${money(optionPrice(product, option))}` : ''}</option>
+                  })}
                 </select>
               )}
               <div className="form-row">
-                <label>Cantidad<input required type="number" inputMode="numeric" min={1} max={product?.stock} value={line.quantity} onChange={(event) => updateSaleLine(index, { quantity: event.target.value })} /></label>
+                <label>Cantidad<input required type="number" inputMode="numeric" min={1} max={available || undefined} value={line.quantity} onChange={(event) => updateSaleLine(index, { quantity: event.target.value })} /></label>
                 <label>Precio por unidad (RD$)<input required type="number" inputMode="decimal" min={0} step="0.01" value={line.price} onChange={(event) => updateSaleLine(index, { price: event.target.value })} /></label>
               </div>
-              {product && lineTotal > 0 && <p className="sale-line-total">{line.quantity} × {money(Math.round(Number(line.price || 0) * 100))} = <strong>{money(lineTotal)}</strong>{product.price > 0 && Math.round(Number(line.price || 0) * 100) < product.price && <span> · precio de tienda {money(product.price)}</span>}</p>}
+              {product && lineTotal > 0 && <p className="sale-line-total">{line.quantity} × {money(cents(line.price))} = <strong>{money(lineTotal)}</strong>{listPrice > 0 && cents(line.price) < listPrice && <span> · precio de tienda {money(listPrice)}</span>}</p>}
             </div>
           })}
           <button type="button" className="ghost-button sale-add-line" onClick={() => setSaleDraft((current) => current && { ...current, lines: [...current.lines, emptySaleLine()] })}><Plus size={14} />Agregar otro producto</button>
@@ -1088,7 +1401,7 @@ export function AdminPanel() {
             </label>
             <label>Nota (opcional)<input value={saleDraft.notes} onChange={(event) => setSaleDraft((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. venta al por mayor" /></label>
           </div>
-          <p className="order-edit-total">Total de la venta: <strong>{money(saleDraft.lines.reduce((sum, line) => sum + Math.round(Number(line.quantity || 0) * Number(line.price || 0) * 100), 0))}</strong></p>
+          <p className="order-edit-total">Total de la venta: <strong>{money(saleDraft.lines.reduce((sum, line) => sum + Math.round(Number(line.quantity || 0)) * cents(line.price), 0))}</strong></p>
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy}>{busy ? 'Registrando…' : 'Registrar venta'}</button>
         </form>
@@ -1100,7 +1413,7 @@ export function AdminPanel() {
         <form className="product-form" onSubmit={handleSaveExpense}>
           <label>Tipo
             <select value={editingExpense.type} onChange={(event) => setEditingExpense((current) => current && { ...current, type: event.target.value as 'negocio' | 'personal' })}>
-              <option value="negocio">Gasto del negocio (sale del capital del negocio)</option>
+              <option value="negocio">Gasto del negocio (sale del dinero del negocio)</option>
               <option value="personal">Gasto o retiro personal (sale de lo tuyo)</option>
             </select>
           </label>

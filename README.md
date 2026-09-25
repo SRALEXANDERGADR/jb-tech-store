@@ -190,3 +190,23 @@ tarjeta en línea, citas/reservas (eso es lo de Ela, que vende
 servicios), ni facturación con PDF. Si en algún momento quieres
 agregar alguna de estas cosas, dímelo y lo construimos encima de esta
 misma base.
+
+## Opciones con su propio precio y cantidad
+
+Una misma tarjeta (ej. "Cover para iPhone 12") puede tener varias
+opciones (colores, diseños, modelos). En **Productos → Editar → 3 ·
+Opciones**, cada opción puede tener su foto, su **precio** (si se deja
+vacío usa el precio general) y, con «Cada opción tiene su propia
+cantidad» activado, su **cantidad**.
+
+- **Reponer** muestra todas las opciones: pones cuántas compraste de cada
+  una y a cuánto. Cada opción queda como su propio lote de compra.
+- Al vender, cada opción sale de SUS compras, la más vieja primero
+  (FIFO). En **Productos → Compras** se ve cuál compra «Se vende ahora» y
+  cuál está «En espera»; en **Pedidos** cada línea dice a cuánto costó.
+- Compras registradas antes de separar por opción aparecen como «Sin
+  opción»: con **Repartir** se dice cuántas eran de cada opción.
+
+Las columnas nuevas (`products.option_stock`, `purchases.option`) las crea
+la app sola al arrancar; `db/migrations/0006_option_stock.sql` es solo
+para referencia.

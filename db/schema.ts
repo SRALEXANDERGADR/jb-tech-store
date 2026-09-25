@@ -1,4 +1,5 @@
 import { pgTable, serial, text, integer, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core'
+import type { ProductVariant } from '../src/lib/variants'
 
 // ───────────────────────────────────────────────────────────────────────
 // PRODUCTOS — catálogo de teléfonos, laptops y accesorios de JB Tech Store.
@@ -14,8 +15,9 @@ export const products = pgTable('products', {
   name: text('name').notNull(),
   category: text('category').notNull().default('Otros'),
   description: text('description').notNull().default(''),
-  // Opciones seleccionables (color/diseño), separadas por coma, ej. "Negro, Azul, Transparente".
-  // Vacío = el producto no muestra selector. No lleva stock ni precio propio por opción.
+  // Opciones seleccionables (color/diseño/modelo), separadas por coma, ej. "Negro, Azul, Transparente".
+  // Vacío = el producto no muestra selector. El precio y la cantidad propios
+  // de cada opción (si los tiene) se guardan en `variantImages`.
   options: text('options').notNull().default(''),
   price: integer('price').notNull().default(0), // centavos
   originalPrice: integer('original_price').notNull().default(0), // centavos, 0 = sin descuento
@@ -31,7 +33,14 @@ export const products = pgTable('products', {
   // opción no tiene entrada aquí, la tienda usa la imagen y la
   // descripción generales del producto (arriba) como hasta ahora — no
   // reemplaza `options`, solo lo enriquece opción por opción.
-  variantImages: jsonb('variant_images').notNull().default([]).$type<Array<{ option: string; image: string; description: string }>>(),
+  //
+  // Cada entrada también puede tener `price` (precio propio de esa opción,
+  // en centavos; 0 = usa el precio general) y `stock` (cantidad de esa
+  // opción, solo cuando `optionStock` está activado). Ver src/lib/variants.ts.
+  variantImages: jsonb('variant_images').notNull().default([]).$type<ProductVariant[]>(),
+  // true = "Cada opción tiene su propia cantidad": se vende, se repone y se
+  // cuenta por opción, y `stock` pasa a ser la suma de todas las opciones.
+  optionStock: boolean('option_stock').notNull().default(false),
   featured: boolean('featured').notNull().default(false), // pestaña Destacados
   isNew: boolean('is_new').notNull().default(false), // pestaña Nuevos
   bestSeller: boolean('best_seller').notNull().default(false), // pestaña Más vendidos
@@ -74,7 +83,9 @@ export const orders = pgTable('orders', {
   // `cost` es el costo promedio del producto en el momento de la venta
   // (copia, no referencia) — así la Ganancia de un pedido ya hecho no
   // cambia si más adelante compras ese mismo producto a otro costo.
-  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number }>>(),
+  // `option` = la opción elegida (color/diseño). Los pedidos viejos no la
+  // tienen: en ese caso se saca del nombre ("Producto — opción").
+  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string }>>(),
   // Descuento manual aplicado por el admin al negociar con el cliente
   // (en centavos). 0 = sin descuento. `total` ya sale con el descuento
   // restado — se recalcula en el servidor cada vez que se edita el pedido.
@@ -127,6 +138,10 @@ export const purchases = pgTable('purchases', {
   id: serial('id').primaryKey(),
   productId: integer('product_id').notNull(),
   productName: text('product_name').notNull(), // copia del nombre, por si el producto se borra después
+  // Opción (color/diseño) a la que pertenece este lote. '' = lote del
+  // producto en general (o de antes de separar por opción): en un producto
+  // con cantidad por opción, cualquier opción puede salir de ese lote.
+  option: text('option').notNull().default(''),
   quantity: integer('quantity').notNull(),
   unitCost: integer('unit_cost').notNull(), // centavos
   totalCost: integer('total_cost').notNull(), // centavos = quantity * unitCost
