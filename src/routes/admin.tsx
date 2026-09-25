@@ -10,10 +10,10 @@ export const Route = createFileRoute('/admin')({
       { name: 'robots', content: 'noindex' },
       { name: 'apple-mobile-web-app-title', content: 'JB Admin' },
     ],
-    links: [
-      { rel: 'manifest', href: '/admin.webmanifest' },
-      { rel: 'apple-touch-icon', href: '/admin-192.png' },
-    ],
+    // El manifest (lo que hace que Chrome ofrezca "Instalar app") NO va
+    // aquí: lo agrega el panel solo DESPUÉS de entrar con la contraseña, así
+    // nadie más ve la oferta de instalar el panel.
+    links: [{ rel: 'apple-touch-icon', href: '/admin-192.png' }],
   }),
   component: AdminPanel,
 })

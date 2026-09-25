@@ -329,6 +329,39 @@ function deviceLabel() {
   return `${system} · ${browser}`
 }
 
+// Chrome avisa "se puede instalar" con el evento beforeinstallprompt. Se
+// guarda aquí (y se evita su cartelito automático) para que la única forma
+// de instalar sea el botón «Instalar app» del panel, ya con la sesión abierta.
+let deferredInstall: InstallPromptEvent | null = null
+const installListeners = new Set<(event: InstallPromptEvent | null) => void>()
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (event) => {
+    if (!window.location.pathname.startsWith('/admin')) return
+    event.preventDefault()
+    deferredInstall = event as InstallPromptEvent
+    installListeners.forEach((listener) => listener(deferredInstall))
+  })
+  window.addEventListener('appinstalled', () => {
+    deferredInstall = null
+    installListeners.forEach((listener) => listener(null))
+  })
+}
+
+/** Pone (o quita) el manifest de la app "JB Admin" en la página. Solo se
+ * pone con la sesión abierta. */
+function setAdminManifest(enabled: boolean) {
+  const existing = document.getElementById('admin-manifest')
+  if (enabled && !existing) {
+    const link = document.createElement('link')
+    link.id = 'admin-manifest'
+    link.rel = 'manifest'
+    link.href = '/admin.webmanifest'
+    document.head.appendChild(link)
+  } else if (!enabled && existing) {
+    existing.remove()
+  }
+}
+
 function isInstalledApp() {
   return typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as any).standalone === true)
 }
@@ -339,7 +372,7 @@ function AppAndNotifications() {
   const [endpoint, setEndpoint] = useState('')
   const [working, setWorking] = useState(false)
   const [message, setMessage] = useState('')
-  const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null)
+  const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(() => deferredInstall)
   const [installed, setInstalled] = useState(false)
 
   async function load() {
@@ -357,11 +390,13 @@ function AppAndNotifications() {
   useEffect(() => {
     setInstalled(isInstalledApp())
     load().catch(() => setState('no-soportado'))
-    const onPrompt = (event: Event) => { event.preventDefault(); setInstallEvent(event as InstallPromptEvent) }
-    const onInstalled = () => { setInstalled(true); setInstallEvent(null) }
-    window.addEventListener('beforeinstallprompt', onPrompt)
-    window.addEventListener('appinstalled', onInstalled)
-    return () => { window.removeEventListener('beforeinstallprompt', onPrompt); window.removeEventListener('appinstalled', onInstalled) }
+    setInstallEvent(deferredInstall)
+    const listener = (event: InstallPromptEvent | null) => {
+      setInstallEvent(event)
+      if (!event) setInstalled(true)
+    }
+    installListeners.add(listener)
+    return () => { installListeners.delete(listener) }
   }, [])
 
   async function run(action: () => Promise<void>) {
@@ -417,6 +452,7 @@ function AppAndNotifications() {
     await installEvent.prompt()
     const choice = await installEvent.userChoice
     if (choice.outcome === 'accepted') setInstalled(true)
+    deferredInstall = null
     setInstallEvent(null)
   })
 
@@ -435,7 +471,7 @@ function AppAndNotifications() {
             ? <span className="app-ok"><Check size={14} />Ya la estás usando como app.</span>
             : installEvent
             ? <button type="button" className="primary-button" disabled={working} onClick={install}><Smartphone size={16} />Instalar app</button>
-            : <span>En Chrome: toca el menú <b>⋮</b> (arriba a la derecha) → <b>«Instalar app»</b> o <b>«Agregar a pantalla principal»</b>. En la PC: el ícono de instalar en la barra de dirección.</span>}
+            : <span>Preparando el botón de instalar… Si en unos segundos no aparece, en Chrome toca el menú <b>⋮</b> → <b>«Instalar app»</b> (en la PC, el ícono de instalar en la barra de dirección).</span>}
         </div>
       </div>
 
@@ -524,6 +560,9 @@ export function AdminPanel() {
       if (ok) await refresh().catch((caught) => setError(caught instanceof Error ? caught.message : 'No pudimos cargar los datos.'))
     })
   }, [])
+
+  // Solo con la sesión abierta se ofrece instalar el panel como app.
+  useEffect(() => { setAdminManifest(authenticated === true) }, [authenticated])
 
   // La notificación de un pedido abre /admin?tab=pedidos. Y al abrir o
   // volver a la app se quitan el punto del ícono y las notificaciones ya vistas.
