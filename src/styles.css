@@ -833,6 +833,16 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .money-card strong { color: var(--white); font-size: clamp(18px, 5.4vw, 26px); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .money-card small { color: var(--ink-faint); font-size: 11.5px; line-height: 1.35; }
 .money-card-accent { background: linear-gradient(160deg, rgba(34,197,94,.16), rgba(15,27,51,1) 70%); border-color: rgba(34,197,94,.3); }
+/* 5 tarjetas: en el teléfono la última (sola en su fila) ocupa todo el ancho. */
+@media (max-width: 719px) { .money-hero .money-card:last-child:nth-child(odd) { grid-column: 1 / -1; } }
+.finance-group-title { margin: 4px 0 8px; color: var(--ink-dim); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+/* Reponer: ¿con qué dinero? */
+.fund-choice { display: flex; flex-direction: column; gap: 6px; }
+.fund-choice-title { font-size: 12.5px; color: var(--ink-dim); font-weight: 700; }
+.fund-option { background: var(--navy-900) !important; border-color: rgba(255,255,255,.1) !important; }
+.fund-option.is-active { background: rgba(59,130,246,.1) !important; border-color: rgba(96,165,250,.45) !important; }
+.fund-option em { font-style: normal; font-weight: 800; color: var(--ink); }
+.fund-option em.is-negative { color: #fca5a5; }
 .admin-details { background: var(--navy-800); border: 1px solid rgba(255,255,255,.06); border-radius: var(--radius-md); margin: 12px 0; }
 .admin-details > summary { cursor: pointer; padding: 13px 14px; color: var(--ink); font-size: 13.5px; font-weight: 800; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .admin-details > summary::-webkit-details-marker { display: none; }
@@ -855,6 +865,7 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .lot-row-title strong { color: var(--ink); font-size: 14px; }
 .lot-option { display: inline-block; font-size: 11.5px; font-weight: 800; color: var(--ink); background: rgba(255,255,255,.08); padding: 3px 8px; border-radius: 999px; }
 .lot-option-general { color: #fcd34d; background: rgba(245,158,11,.15); }
+.lot-fund { color: #c4b5fd; background: rgba(139,92,246,.18); }
 .lot-badge { flex: none; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
 .lot-badge-ahora { background: rgba(34,197,94,.16); color: #86efac; }
 .lot-badge-espera { background: rgba(59,130,246,.16); color: var(--blue-400); }
@@ -945,7 +956,10 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
   .product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .footer-grid { grid-template-columns: 1.4fr 1fr 1fr 1fr; }
   .admin-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .money-hero { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  /* Arriba las 3 cajas de dinero; abajo ganancia y mercancía. */
+  .money-hero { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .money-hero .money-card { grid-column: span 2; }
+  .money-hero .money-card:nth-child(n+4) { grid-column: span 3; }
   .form-row { grid-template-columns: 1fr 1fr; }
 }
 

@@ -17,8 +17,21 @@ const TRASH_DAYS = 30
 const TRASH_MS = TRASH_DAYS * 24 * 60 * 60 * 1000
 
 export type CartLine = { productId: number; name: string; price: number; quantity: number; image: string; option?: string }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }
 type ProductRow = typeof products.$inferSelect
+
+// Con qué dinero se paga una compra (ver `purchases.fund`).
+const FUNDS = ['capital', 'reinversion'] as const
+type Fund = (typeof FUNDS)[number]
+
+/** Lo que costaron unas unidades vendidas: el total, y cuánto de eso (y
+ * cuántas unidades) salió de lotes pagados con el dinero para reinvertir. */
+type TakenCost = { cost: number; reinv: number; reinvQty: number }
+
+/** Línea de pedido con su parte de reinversión (solo se guarda si la hay). */
+function withReinv(item: Omit<OrderItem, 'reinvCost' | 'reinvQty'>, reinvCost: number, reinvQty: number): OrderItem {
+  return reinvQty > 0 ? { ...item, reinvCost, reinvQty } : item
+}
 
 export const CATEGORIES = ['Teléfonos', 'Laptops', 'Accesorios', 'Cargadores y Cables', 'Covers y Protectores', 'Audífonos y Bocinas', 'Relojes Inteligentes', 'Gaming', 'Otros']
 
@@ -121,12 +134,13 @@ function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const result = await db.execute(sql`select
-        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name = 'option')))
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund'))))
         + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name = 'push_subscriptions') as n`)
       const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 3) return
+      if (Number(rows[0]?.n ?? 0) >= 4) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
+      await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "fund" text NOT NULL DEFAULT 'capital'`)
       await db.execute(sql`CREATE TABLE IF NOT EXISTS "push_subscriptions" ("id" serial PRIMARY KEY, "endpoint" text NOT NULL UNIQUE, "p256dh" text NOT NULL, "auth" text NOT NULL, "label" text NOT NULL DEFAULT '', "created_at" timestamp NOT NULL DEFAULT now())`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
@@ -175,43 +189,64 @@ async function fallbackCost(product: ProductRow, option: string): Promise<number
 }
 
 // Consume del lote más viejo primero (FIFO) para vender `quantity`
-// unidades y devuelve el costo total (centavos) de esa cantidad. Si no hay
+// unidades y devuelve el costo total (centavos) de esa cantidad, y cuánto
+// de eso salió de lotes pagados con el dinero para reinvertir. Si no hay
 // suficiente cantidad registrada en lotes, usa fallbackCost para lo que
-// falte, para no bloquear la venta.
-async function consumeFifoCost(product: ProductRow, option: string, quantity: number): Promise<number> {
+// falte (como dinero del negocio), para no bloquear la venta.
+async function consumeFifoCost(product: ProductRow, option: string, quantity: number): Promise<TakenCost> {
   let remaining = quantity
-  let totalCost = 0
+  const taken: TakenCost = { cost: 0, reinv: 0, reinvQty: 0 }
   const batches = await db.select().from(purchases)
     .where(and(lotsFor(product, option), gt(purchases.remainingQuantity, 0)))
     .orderBy(purchases.createdAt, purchases.id)
   for (const batch of batches) {
     if (remaining <= 0) break
     const take = Math.min(remaining, batch.remainingQuantity)
-    totalCost += take * batch.unitCost
+    taken.cost += take * batch.unitCost
+    if (batch.fund === 'reinversion') {
+      taken.reinv += take * batch.unitCost
+      taken.reinvQty += take
+    }
     remaining -= take
     await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity - take }).where(eq(purchases.id, batch.id))
   }
-  if (remaining > 0) totalCost += remaining * (await fallbackCost(product, option))
+  if (remaining > 0) taken.cost += remaining * (await fallbackCost(product, option))
   // El "costo actual" mostrado del producto pasa a ser el del próximo lote
   // disponible (el siguiente que se va a consumir), no un promedio.
   await syncCurrentCost(product.id)
-  return totalCost
+  return taken
 }
 
 /** Devuelve unidades a los lotes de los que salieron (pedido cancelado o
  * editado a menos unidades): primero al lote más reciente que ya se había
- * empezado a vender, luego a los anteriores — el reverso de consumeFifoCost. */
-async function returnToFifo(product: ProductRow, option: string, quantity: number) {
-  let remaining = quantity
+ * empezado a vender, luego a los anteriores — el reverso de consumeFifoCost.
+ * Las `reinvQty` unidades que salieron de lotes del dinero para reinvertir
+ * vuelven a lotes de esa misma caja, y las demás a lotes del negocio; lo
+ * que no quepa ahí va a cualquier lote con espacio. */
+async function returnToFifo(product: ProductRow, option: string, quantity: number, reinvQty = 0) {
   const batches = await db.select().from(purchases)
     .where(and(lotsFor(product, option), lt(purchases.remainingQuantity, purchases.quantity)))
     .orderBy(desc(purchases.createdAt), desc(purchases.id))
+  const put = new Map<number, number>()
+  const fill = (list: typeof batches, amount: number) => {
+    let remaining = amount
+    for (const batch of list) {
+      if (remaining <= 0) break
+      const room = batch.quantity - batch.remainingQuantity - (put.get(batch.id) ?? 0)
+      if (room <= 0) continue
+      const add = Math.min(room, remaining)
+      put.set(batch.id, (put.get(batch.id) ?? 0) + add)
+      remaining -= add
+    }
+    return remaining
+  }
+  const reinv = Math.min(quantity, Math.max(0, reinvQty))
+  const left = fill(batches.filter((batch) => batch.fund === 'reinversion'), reinv)
+    + fill(batches.filter((batch) => batch.fund !== 'reinversion'), quantity - reinv)
+  fill(batches, left)
   for (const batch of batches) {
-    if (remaining <= 0) break
-    const put = Math.min(batch.quantity - batch.remainingQuantity, remaining)
-    if (put <= 0) continue
-    await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity + put }).where(eq(purchases.id, batch.id))
-    remaining -= put
+    const add = put.get(batch.id)
+    if (add) await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity + add }).where(eq(purchases.id, batch.id))
   }
 }
 
@@ -235,25 +270,27 @@ async function changeStock(productId: number, option: string, delta: number) {
 }
 
 /** Saca `quantity` unidades del inventario (FIFO) y devuelve su costo
- * total. Falla con un mensaje claro si no hay suficientes. */
-async function takeStock(productId: number, option: string, quantity: number, label: string): Promise<number> {
-  if (quantity <= 0) return 0
+ * total (y la parte del dinero para reinvertir). Falla con un mensaje
+ * claro si no hay suficientes. */
+async function takeStock(productId: number, option: string, quantity: number, label: string): Promise<TakenCost> {
+  if (quantity <= 0) return { cost: 0, reinv: 0, reinvQty: 0 }
   const product = await loadProduct(productId)
   if (!product) throw new Error(`El producto ${label} ya no existe.`)
   if (tracksOptionStock(product) && !option) throw new Error(`Elige la opción (color/diseño) de ${product.name}.`)
   const available = optionStock(product, option)
   if (available < quantity) throw new Error(`No hay suficientes unidades de ${label} (quedan ${available}).`)
-  const cost = await consumeFifoCost(product, option, quantity)
+  const taken = await consumeFifoCost(product, option, quantity)
   await changeStock(productId, option, -quantity)
-  return cost
+  return taken
 }
 
-/** Devuelve `quantity` unidades al inventario y a sus lotes. */
-async function returnStock(productId: number, option: string, quantity: number) {
+/** Devuelve `quantity` unidades al inventario y a sus lotes (`reinvQty` de
+ * ellas habían salido de lotes del dinero para reinvertir). */
+async function returnStock(productId: number, option: string, quantity: number, reinvQty = 0) {
   if (quantity <= 0) return
   const product = await loadProduct(productId)
   if (!product) return // el producto se eliminó definitivamente: no hay a dónde devolver
-  await returnToFifo(product, option, quantity)
+  await returnToFifo(product, option, quantity, reinvQty)
   await changeStock(productId, option, quantity)
   await syncCurrentCost(productId)
 }
@@ -294,6 +331,42 @@ function checkAvailability(lines: Array<{ productId: number; option: string; qua
 function itemOption(rows: ProductRow[], item: { id: number; name: string; option?: string }) {
   const product = rows.find((row) => row.id === item.id)
   return product ? resolveOption(product, item.option, item.name) : String(item.option || '')
+}
+
+/** Unidades de un mismo producto+opción dentro de un pedido, con lo que
+ * costaron en total y la parte que salió del dinero para reinvertir. */
+type CostPool = { quantity: number; cost: number; reinvCost: number; reinvQty: number }
+
+/** Deja el grupo en `quantity` unidades (menos que antes): las que salen se
+ * reparten entre las dos cajas en la misma proporción que tenía, y el costo
+ * de cada caja baja en proporción. Devuelve también cuántas de las que
+ * salen eran del dinero para reinvertir (para devolverlas a esos lotes). */
+function shrinkPool(pool: CostPool, quantity: number): { kept: CostPool; removedReinvQty: number } {
+  if (quantity <= 0 || pool.quantity <= 0) return { kept: { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }, removedReinvQty: pool.reinvQty }
+  const removed = pool.quantity - quantity
+  const capitalQty = pool.quantity - pool.reinvQty
+  const removedReinvQty = Math.min(pool.reinvQty, Math.max(removed - capitalQty, Math.round((removed * pool.reinvQty) / pool.quantity)))
+  const reinvQty = pool.reinvQty - removedReinvQty
+  const reinvCost = pool.reinvQty > 0 ? Math.round((pool.reinvCost * reinvQty) / pool.reinvQty) : 0
+  const capitalKept = capitalQty - (removed - removedReinvQty)
+  const capitalCost = capitalQty > 0 ? Math.round((Math.max(0, pool.cost - pool.reinvCost) * capitalKept) / capitalQty) : 0
+  return { kept: { quantity, cost: capitalCost + reinvCost, reinvCost, reinvQty }, removedReinvQty }
+}
+
+/** Reparte `total` según los pesos, redondeando sobre lo acumulado para que
+ * la suma de las partes dé exacto el total (y ninguna parte pase de su peso
+ * cuando el total no pasa de la suma de los pesos). */
+function splitByWeight(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((acc, weight) => acc + weight, 0)
+  let accWeight = 0
+  let previous = 0
+  return weights.map((weight) => {
+    accWeight += weight
+    const upTo = sum > 0 ? Math.round((total * accWeight) / sum) : 0
+    const part = upTo - previous
+    previous = upTo
+    return part
+  })
 }
 
 // Mantenimiento (textos por defecto + limpieza de papelera): antes se
@@ -471,8 +544,8 @@ export const createOrder = createServerFn({ method: 'POST' })
     const calculated: OrderItem[] = []
     for (const line of lines) {
       const name = lineName(line.product.name, line.option)
-      const batchCost = await takeStock(line.productId, line.option, line.quantity, name)
-      calculated.push({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(batchCost / line.quantity), option: line.option })
+      const taken = await takeStock(line.productId, line.option, line.quantity, name)
+      calculated.push(withReinv({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.reinv, taken.reinvQty))
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -625,7 +698,7 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
     // hay stock suficiente; si no, avisa y no cambia nada.
     if (!wasCancelled && willBeCancelled) {
       const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
-      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity)
+      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity, item.reinvQty ?? 0)
     } else if (wasCancelled && !willBeCancelled) {
       const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
       if (order.items.some((item) => !rows.some((row) => row.id === item.id))) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
@@ -634,8 +707,11 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
       const next: OrderItem[] = []
       for (const [index, item] of order.items.entries()) {
         const option = lines[index].option
-        const cost = await takeStock(item.id, option, item.quantity, item.name)
-        next.push({ ...item, option, cost: Math.round(cost / Math.max(1, item.quantity)) })
+        const taken = await takeStock(item.id, option, item.quantity, item.name)
+        // El costo (y de qué dinero salió) se vuelve a calcular: las unidades
+        // pueden salir ahora de otros lotes que cuando se hizo el pedido.
+        const { reinvCost: _reinvCost, reinvQty: _reinvQty, ...rest } = item
+        next.push(withReinv({ ...rest, option, cost: Math.round(taken.cost / Math.max(1, item.quantity)) }, taken.reinv, taken.reinvQty))
       }
       items = next
     }
@@ -654,39 +730,81 @@ export const updateOrder = createServerFn({ method: 'POST' })
     if (!previous) throw new Error('Ese pedido ya no existe.')
     const ids = [...new Set([...previous.items.map((item) => item.id), ...data.items.map((item) => Number(item.id))])]
     const rows = await db.select().from(products).where(inArray(products.id, ids))
+    // Del navegador solo se toman nombre, cantidad y precio. El costo (y de
+    // qué dinero salió) se calcula aquí, a partir del pedido anterior.
     const items: OrderItem[] = data.items.map((item) => {
-      const clean = { id: Number(item.id), name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(Number(item.price) || 0)), quantity: Math.max(1, Math.round(Number(item.quantity) || 1)), cost: Math.max(0, Math.round(Number(item.cost) || 0)), option: String(item.option || '') }
+      const clean = { id: Number(item.id), name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(Number(item.price) || 0)), quantity: Math.max(1, Math.round(Number(item.quantity) || 1)), cost: 0, option: String(item.option || '') }
       return { ...clean, option: itemOption(rows, clean) }
+    })
+    // Se cuenta por producto Y por opción: cuántas unidades tenía el pedido,
+    // lo que costaron en total y la parte del dinero para reinvertir.
+    const keyOf = (item: { id: number; option?: string }) => `${item.id}::${item.option || ''}`
+    const before = new Map<string, CostPool>()
+    for (const item of previous.items) {
+      const key = keyOf({ id: item.id, option: itemOption(rows, item) })
+      const pool = before.get(key) ?? { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }
+      pool.quantity += item.quantity
+      pool.cost += item.cost * item.quantity
+      pool.reinvCost += Math.max(0, item.reinvCost ?? 0)
+      pool.reinvQty += Math.min(item.quantity, Math.max(0, item.reinvQty ?? 0))
+      before.set(key, pool)
+    }
+    const after = new Map<string, number>()
+    for (const item of items) after.set(keyOf(item), (after.get(keyOf(item)) ?? 0) + item.quantity)
+    const changes = [...new Set([...before.keys(), ...after.keys()])].map((key) => {
+      const [id, ...rest] = key.split('::')
+      const pool = before.get(key) ?? { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }
+      return { key, productId: Number(id), option: rest.join('::'), pool, extra: (after.get(key) ?? 0) - pool.quantity }
     })
     // Si cambió la cantidad de algún producto (o se quitó uno), el
     // inventario se ajusta solo: menos unidades = vuelven al stock (y a su
-    // lote); más unidades = se sacan del stock. Se cuenta por producto Y por
-    // opción. Un pedido cancelado no toca el stock.
-    if (previous.status !== 'Cancelado') {
-      const keyOf = (item: { id: number; option?: string }) => `${item.id}::${item.option || ''}`
-      const before = new Map<string, number>()
-      for (const item of previous.items) {
-        const key = keyOf({ id: item.id, option: itemOption(rows, item) })
-        before.set(key, (before.get(key) ?? 0) + item.quantity)
+    // lote); más unidades = se sacan del stock. Un pedido cancelado no toca
+    // el stock.
+    const active = previous.status !== 'Cancelado'
+    const increases = changes.filter((change) => change.extra > 0 && rows.some((row) => row.id === change.productId))
+    if (active) checkAvailability(increases.map((change) => ({ productId: change.productId, option: change.option, quantity: change.extra })), rows)
+    const pools = new Map<string, CostPool>()
+    for (const change of changes) {
+      if (change.extra >= 0) continue
+      // Menos unidades: todo baja en proporción.
+      const { kept, removedReinvQty } = shrinkPool(change.pool, change.pool.quantity + change.extra)
+      if (active) await returnStock(change.productId, change.option, -change.extra, removedReinvQty)
+      pools.set(change.key, kept)
+    }
+    for (const change of changes) {
+      if (change.extra < 0) continue
+      const pool = { ...change.pool }
+      if (change.extra > 0) {
+        if (active && increases.includes(change)) {
+          // Más unidades: se suma lo que costaron las que se sacaron ahora.
+          const target = items.find((item) => keyOf(item) === change.key)
+          const taken = await takeStock(change.productId, change.option, change.extra, target?.name ?? 'un producto')
+          pool.cost += taken.cost
+          pool.reinvCost += taken.reinv
+          pool.reinvQty += taken.reinvQty
+        } else {
+          // Pedido cancelado (no saca del inventario) o producto que ya no
+          // existe: las unidades nuevas toman el costo promedio que ya tenía.
+          const unitCost = pool.quantity > 0 ? pool.cost / pool.quantity : rows.find((row) => row.id === change.productId)?.cost ?? 0
+          pool.cost += Math.round(unitCost * change.extra)
+        }
+        pool.quantity += change.extra
       }
-      const after = new Map<string, number>()
-      for (const item of items) after.set(keyOf(item), (after.get(keyOf(item)) ?? 0) + item.quantity)
-      const changes = [...new Set([...before.keys(), ...after.keys()])].map((key) => {
-        const [id, ...rest] = key.split('::')
-        return { key, productId: Number(id), option: rest.join('::'), extra: (after.get(key) ?? 0) - (before.get(key) ?? 0) }
+      pools.set(change.key, pool)
+    }
+    // Cada grupo se reparte entre sus líneas (normalmente es una sola).
+    for (const [key, pool] of pools) {
+      const positions = items.flatMap((item, index) => (keyOf(item) === key ? [index] : []))
+      if (!positions.length) continue
+      const quantities = positions.map((position) => items[position].quantity)
+      const reinvQtys = splitByWeight(pool.reinvQty, quantities)
+      const reinvCosts = splitByWeight(pool.reinvCost, reinvQtys)
+      const capitalWeights = quantities.map((quantity, index) => quantity - reinvQtys[index])
+      const capitalCosts = splitByWeight(Math.max(0, pool.cost - pool.reinvCost), capitalWeights.some((weight) => weight > 0) ? capitalWeights : quantities)
+      positions.forEach((position, index) => {
+        const line = items[position]
+        items[position] = withReinv({ ...line, cost: Math.round((capitalCosts[index] + reinvCosts[index]) / line.quantity) }, reinvCosts[index], reinvQtys[index])
       })
-      const increases = changes.filter((change) => change.extra > 0 && rows.some((row) => row.id === change.productId))
-      checkAvailability(increases.map((change) => ({ productId: change.productId, option: change.option, quantity: change.extra })), rows)
-      for (const change of changes) {
-        if (change.extra < 0) await returnStock(change.productId, change.option, -change.extra)
-      }
-      for (const change of increases) {
-        const target = items.find((item) => keyOf(item) === change.key)
-        const extraCost = await takeStock(change.productId, change.option, change.extra, target?.name ?? 'un producto')
-        // El costo de la línea se vuelve el promedio entre lo que ya tenía y
-        // lo que costaron las unidades nuevas que se sacaron ahora.
-        if (target) target.cost = Math.round((target.cost * Math.max(0, target.quantity - change.extra) + extraCost) / target.quantity)
-      }
     }
     const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     // El descuento nunca puede ser negativo ni superar el subtotal, para
@@ -747,8 +865,8 @@ export const recordManualSale = createServerFn({ method: 'POST' })
     for (const line of lines) {
       const row = rows.find((item) => item.id === line.productId)!
       const name = lineName(row.name, line.option)
-      const cost = await takeStock(row.id, line.option, line.quantity, name)
-      items.push({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(cost / line.quantity), option: line.option })
+      const taken = await takeStock(row.id, line.option, line.quantity, name)
+      items.push(withReinv({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.reinv, taken.reinvQty))
     }
     const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customerName = String(data.customerName || '').trim().slice(0, 80) || 'Venta en tienda'
@@ -820,10 +938,12 @@ export const purgeCustomer = createServerFn({ method: 'POST' }).inputValidator((
 // Registra una compra/reposición de inventario: suma el stock del
 // producto y crea un lote nuevo (las ventas consumen primero el lote más
 // viejo — FIFO). Si se registró mal, se puede borrar (ver deletePurchase).
+// `fund` dice con qué dinero se pagó: el del negocio o el de reinvertir.
 export const recordPurchase = createServerFn({ method: 'POST' })
-  .inputValidator((data: { productId: number; notes: string; lines: Array<{ option: string; quantity: number; unitCost: number }> }) => data)
+  .inputValidator((data: { productId: number; notes: string; fund?: Fund; lines: Array<{ option: string; quantity: number; unitCost: number }> }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
+    const fund: Fund = FUNDS.includes(data.fund as Fund) ? (data.fund as Fund) : 'capital'
     const product = await loadProduct(Number(data.productId))
     if (!product) throw new Error('Ese producto ya no existe.')
     const tracking = tracksOptionStock(product)
@@ -856,17 +976,18 @@ export const recordPurchase = createServerFn({ method: 'POST' })
       await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
     }
     await db.insert(purchases).values(lines.map((line) => ({
-      productId: product.id, productName: product.name, option: line.option, quantity: line.quantity, unitCost: line.unitCost,
+      productId: product.id, productName: product.name, option: line.option, fund, quantity: line.quantity, unitCost: line.unitCost,
       totalCost: line.quantity * line.unitCost, remainingQuantity: line.quantity, notes,
     })))
-    return { lots: lines.length, total: lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) }
+    return { lots: lines.length, total: lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0), fund }
   })
 
 // Elimina una compra registrada por error (ej. una de prueba). Solo
 // resta del stock la parte de ese lote que TODAVÍA no se ha vendido
 // (remainingQuantity) — lo que ya se vendió de ese lote se queda como
 // está, porque esas ventas ya guardaron su propio costo y no se tocan.
-// Esto es lo que hace bajar "Capital usado" en Finanzas cuando se borra.
+// Al bajar su totalCost, ese dinero vuelve solo en Finanzas a la caja con
+// que se pagó (Dinero del negocio o Dinero para reinvertir).
 export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
   const [purchase] = await db.select().from(purchases).where(eq(purchases.id, data)).limit(1)
@@ -927,7 +1048,7 @@ export const splitPurchase = createServerFn({ method: 'POST' })
     const total = [...byOption.values()].reduce((sum, quantity) => sum + quantity, 0)
     if (total !== purchase.remainingQuantity) throw new Error(`Tienes que repartir exactamente ${purchase.remainingQuantity} (llevas ${total}).`)
     await db.insert(purchases).values([...byOption.entries()].map(([option, quantity]) => ({
-      productId: purchase.productId, productName: purchase.productName, option, quantity, unitCost: purchase.unitCost,
+      productId: purchase.productId, productName: purchase.productName, option, fund: purchase.fund, quantity, unitCost: purchase.unitCost,
       totalCost: quantity * purchase.unitCost, remainingQuantity: quantity, notes: purchase.notes, createdAt: purchase.createdAt,
     })))
     const sold = purchase.quantity - purchase.remainingQuantity

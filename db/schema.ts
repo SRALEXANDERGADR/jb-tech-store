@@ -85,7 +85,10 @@ export const orders = pgTable('orders', {
   // cambia si más adelante compras ese mismo producto a otro costo.
   // `option` = la opción elegida (color/diseño). Los pedidos viejos no la
   // tienen: en ese caso se saca del nombre ("Producto — opción").
-  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string }>>(),
+  // `reinvQty` = cuántas de esas unidades salieron de lotes comprados con el
+  // "Dinero para reinvertir", y `reinvCost` lo que costaron EN TOTAL (no por
+  // unidad). Sin estos campos = todo salió del dinero del negocio.
+  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }>>(),
   // Descuento manual aplicado por el admin al negociar con el cliente
   // (en centavos). 0 = sin descuento. `total` ya sale con el descuento
   // restado — se recalcula en el servidor cada vez que se edita el pedido.
@@ -142,6 +145,10 @@ export const purchases = pgTable('purchases', {
   // producto en general (o de antes de separar por opción): en un producto
   // con cantidad por opción, cualquier opción puede salir de ese lote.
   option: text('option').notNull().default(''),
+  // Con qué dinero se pagó este lote: 'capital' (dinero del negocio) o
+  // 'reinversion' (el dinero para reinvertir, que es de la dueña). Al
+  // vender, lo que costó vuelve a esa misma caja.
+  fund: text('fund').notNull().default('capital'),
   quantity: integer('quantity').notNull(),
   unitCost: integer('unit_cost').notNull(), // centavos
   totalCost: integer('total_cost').notNull(), // centavos = quantity * unitCost

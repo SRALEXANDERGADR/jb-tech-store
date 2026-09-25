@@ -23,11 +23,12 @@ const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-di
 const shortDate = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short' }).format(new Date(value))
 
 type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: ProductVariant[]; optionStock: boolean; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
-type Purchase = { id: number; productId: number; productName: string; option: string; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
+type Fund = 'capital' | 'reinversion'
+type Purchase = { id: number; productId: number; productName: string; option: string; fund: Fund; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
 type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
 type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
 
@@ -38,7 +39,7 @@ type OptionDraft = { key: string; name: string; originalName: string; image: str
 type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; optionStock: boolean; options: OptionDraft[]; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseLine = { option: string; quantity: string; unitCost: string }
-type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string }
+type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string; fund: Fund }
 type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
 type SaleLine = { productId: string; option: string; quantity: string; price: string }
 type SaleDraft = { customerName: string; phone: string; notes: string; paymentStatus: string; lines: SaleLine[] }
@@ -85,8 +86,10 @@ function purchaseDraftFor(product?: Product): PurchaseDraft {
   const lines = product && tracksOptionStock(product)
     ? parseOptions(product.options).map((option) => ({ option, quantity: '', unitCost: '' }))
     : [{ option: '', quantity: '1', unitCost: '' }]
-  return { productId: product ? String(product.id) : '', notes: '', lines, sameCost: '' }
+  return { productId: product ? String(product.id) : '', notes: '', lines, sameCost: '', fund: 'capital' }
 }
+
+const FUND_LABEL: Record<Fund, string> = { capital: 'Dinero del negocio', reinversion: 'Dinero para reinvertir' }
 
 function emptyExpenseDraft(): ExpenseDraft {
   return { type: 'negocio', description: '', amount: '' }
@@ -143,6 +146,7 @@ function LotRow({ lot, status, showProduct, general, busy, onDelete, onSplit }: 
         <div className="lot-row-title">
           {showProduct && <strong>{lot.productName}</strong>}
           {lot.option ? <span className="lot-option">{lot.option}</span> : general ? <span className="lot-option lot-option-general">Sin opción</span> : null}
+          {lot.fund === 'reinversion' && <span className="lot-option lot-fund" title="Se pagó con el dinero para reinvertir">Reinversión</span>}
         </div>
         <span className={`lot-badge lot-badge-${status}`}>{STATUS_LABEL[status]}</span>
       </div>
@@ -762,18 +766,21 @@ export function AdminPanel() {
       const result = await recordPurchase({ data: {
         productId: Number(draft.productId),
         notes: draft.notes,
+        fund: draft.fund,
         lines: lines.map((line) => ({ option: line.option, quantity: Math.round(Number(line.quantity)), unitCost: cents(line.unitCost) })),
       } })
       setEditingPurchase(null)
-      setNotice(result.lots > 1 ? `Listo: se registraron ${result.lots} compras (una por opción) por ${money(result.total)}.` : `Listo: compra registrada por ${money(result.total)}.`)
+      const paidWith = result.fund === 'reinversion' ? ' con el dinero para reinvertir' : ''
+      setNotice(result.lots > 1 ? `Listo: se registraron ${result.lots} compras (una por opción) por ${money(result.total)}${paidWith}.` : `Listo: compra registrada por ${money(result.total)}${paidWith}.`)
     })
   }
 
   function confirmDeletePurchase(purchase: Purchase) {
     const sold = purchase.quantity - purchase.remainingQuantity
+    const pocket = FUND_LABEL[purchase.fund === 'reinversion' ? 'reinversion' : 'capital']
     const message = sold > 0
-      ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan (del inventario y del Capital usado). ¿Continuar?`
-      : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del inventario y ${money(purchase.totalCost)} vuelven al Capital disponible.`
+      ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan: salen del inventario y ${money(purchase.remainingQuantity * purchase.unitCost)} vuelven al ${pocket}. ¿Continuar?`
+      : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del inventario y ${money(purchase.totalCost)} vuelven al ${pocket}.`
     if (!window.confirm(message)) return
     withBusy(async () => {
       const result = await deletePurchase({ data: purchase.id })
@@ -908,7 +915,7 @@ export function AdminPanel() {
 
   const filteredProducts = data.products.filter((product) => `${product.name} ${product.options}`.toLowerCase().includes(query.toLowerCase()))
   const filteredOrders = data.orders.filter((order) => `${order.orderNumber} ${order.customerName} ${order.phone}`.toLowerCase().includes(query.toLowerCase()))
-  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.option} ${purchase.notes}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
+  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.option} ${purchase.notes} ${purchase.fund === 'reinversion' ? 'reinversión reinversion' : ''}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
   const filteredCustomers = data.customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.email}`.toLowerCase().includes(query.toLowerCase()))
   const pendingOrders = data.orders.filter((order) => order.status === 'Pendiente').length
   const outOfStock = data.products.filter((product) => product.stock === 0).length
@@ -939,20 +946,43 @@ export function AdminPanel() {
   const ingresos = paidOrders.reduce((sum, order) => sum + order.total, 0)
   const costoVentas = paidOrders.reduce((sum, order) => sum + order.items.reduce((s, item) => s + item.cost * item.quantity, 0), 0)
   const gananciaBruta = ingresos - costoVentas
-  const capitalUsado = data.purchases.reduce((sum, purchase) => sum + purchase.totalCost, 0)
-  const capitalRecuperado = costoVentas
+  // El «Dinero para reinvertir» es de la dueña, como su cartera: si compra
+  // mercancía con él, al venderla lo que costó vuelve a esa caja y lo que se
+  // ganó es 100% suyo (no se reparte). `reinvQty`/`reinvCost` de cada línea
+  // dicen cuántas unidades salieron de esos lotes y cuánto costaron. El
+  // descuento del pedido se reparte en proporción al precio de cada línea.
+  let ventasReinvExacto = 0
+  let recuperadoReinv = 0
+  for (const order of paidOrders) {
+    const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+    const share = subtotal > 0 ? order.total / subtotal : 0
+    for (const item of order.items) {
+      const reinvQty = Math.min(item.quantity, Math.max(0, item.reinvQty ?? 0))
+      if (!reinvQty) continue
+      ventasReinvExacto += item.price * reinvQty * share
+      recuperadoReinv += item.reinvCost ?? 0
+    }
+  }
+  const ventasReinv = Math.round(ventasReinvExacto)
+  const gananciaPropia = ventasReinv - recuperadoReinv
+  const gananciaNegocio = gananciaBruta - gananciaPropia
+  const gastadoReinv = data.purchases.filter((purchase) => purchase.fund === 'reinversion').reduce((sum, purchase) => sum + purchase.totalCost, 0)
+  const gastadoCapital = data.purchases.filter((purchase) => purchase.fund !== 'reinversion').reduce((sum, purchase) => sum + purchase.totalCost, 0)
+  const recuperadoCapital = costoVentas - recuperadoReinv
   const capitalInicial = Number(data.content.capitalInicial || 0)
   // Los gastos del NEGOCIO salen del capital del negocio (el dinero con
   // que se compra mercancía), no de la ganancia: así la ganancia que se
   // reparte entre reinversión y "Para ti" queda completa. Los gastos
   // PERSONALES sí salen solo de lo que te toca a ti.
   const gastosNegocio = data.expenses.filter((expense) => expense.type === 'negocio').reduce((sum, expense) => sum + expense.amount, 0)
-  const capitalDisponible = capitalInicial - capitalUsado + capitalRecuperado - gastosNegocio
+  const capitalDisponible = capitalInicial - gastadoCapital + recuperadoCapital - gastosNegocio
   const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount, 0)
   const reinvestPercent = Number(data.content.reinvestPercent ?? 70)
-  const reinversion = Math.round((gananciaBruta * reinvestPercent) / 100)
-  const paraTi = gananciaBruta - reinversion
-  const disponibleRetirar = paraTi - gastosPersonales
+  // Solo la ganancia del negocio se reparte entre reinversión y «Para ti».
+  const reinversion = Math.round((gananciaNegocio * reinvestPercent) / 100)
+  const paraTi = gananciaNegocio - reinversion
+  const dineroReinvertir = reinversion - gastadoReinv + recuperadoReinv
+  const disponibleRetirar = paraTi + gananciaPropia - gastosPersonales
   const inventoryValue = data.purchases.reduce((sum, purchase) => sum + purchase.remainingQuantity * purchase.unitCost, 0)
 
   const TABS: Array<{ id: Tab; label: string; icon: ComponentType<{ size?: number }> }> = [
@@ -1045,8 +1075,9 @@ export function AdminPanel() {
 
             <div className="money-hero">
               <div className="money-card"><span>Dinero del negocio</span><strong>{money(capitalDisponible)}</strong><small>Lo que hay para comprar mercancía</small></div>
+              <div className="money-card"><span>Dinero para reinvertir</span><strong>{money(dineroReinvertir)}</strong><small>Tu {reinvestPercent}% de la ganancia, para comprar más mercancía</small></div>
+              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia{gananciaPropia !== 0 ? ', más lo que ganaste con el dinero para reinvertir,' : ''} menos tus gastos personales</small></div>
               <div className="money-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong><small>De las ventas ya pagadas</small></div>
-              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia, menos tus gastos personales</small></div>
               <div className="money-card"><span>Mercancía en existencia</span><strong>{money(inventoryValue)}</strong><small>Lo que costó lo que todavía no se ha vendido</small></div>
             </div>
             {porCobrar > 0 && <p className="admin-hint"><AlertTriangle size={14} />Te deben {money(porCobrar)} de {porCobrarOrders.length} {porCobrarOrders.length === 1 ? 'pedido' : 'pedidos'} sin pagar. Cuando los marques «Pagado» se suman aquí.</p>}
@@ -1057,18 +1088,35 @@ export function AdminPanel() {
             )}
 
             <Collapsible title="Ver todas las cuentas (cómo se calcula)">
+              <h3 className="finance-group-title">Ventas</h3>
               <div className="admin-cards">
-                <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
-                <div className="admin-card"><span>Gastado en compras</span><strong>{money(capitalUsado)}</strong></div>
-                <div className="admin-card"><span>Recuperado con ventas</span><strong>{money(capitalRecuperado)}</strong></div>
-                <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
                 <div className="admin-card"><span>Vendido (pagado)</span><strong>{money(ingresos)}</strong></div>
                 <div className="admin-card"><span>Costo de lo vendido</span><strong>{money(costoVentas)}</strong></div>
+                <div className="admin-card"><span>Ganancia del negocio</span><strong>{money(gananciaNegocio)}</strong></div>
+                <div className="admin-card"><span>Ganancia de tu dinero para reinvertir</span><strong>{money(gananciaPropia)}</strong></div>
+              </div>
+              <h3 className="finance-group-title">Dinero del negocio</h3>
+              <div className="admin-cards">
+                <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
+                <div className="admin-card"><span>Gastado en compras</span><strong>{money(gastadoCapital)}</strong></div>
+                <div className="admin-card"><span>Recuperado al vender</span><strong>{money(recuperadoCapital)}</strong></div>
+                <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
+              </div>
+              <h3 className="finance-group-title">Dinero para reinvertir</h3>
+              <div className="admin-cards">
                 <div className="admin-card"><span>Reinversión ({reinvestPercent}%)</span><strong>{money(reinversion)}</strong></div>
+                <div className="admin-card"><span>Gastado en compras</span><strong>{money(gastadoReinv)}</strong></div>
+                <div className="admin-card"><span>Recuperado al vender</span><strong>{money(recuperadoReinv)}</strong></div>
+              </div>
+              <h3 className="finance-group-title">Lo tuyo</h3>
+              <div className="admin-cards">
                 <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
+                <div className="admin-card"><span>Ganancia de tu dinero para reinvertir</span><strong>{money(gananciaPropia)}</strong></div>
                 <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
               </div>
-              <p className="admin-hint">Dinero del negocio = capital inicial − compras + lo recuperado al vender − gastos del negocio. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
+              <p className="admin-hint">Dinero del negocio = capital inicial − lo que compraste con él + lo que vuelve al vender esa mercancía − gastos del negocio.</p>
+              <p className="admin-hint">Dinero para reinvertir = el {reinvestPercent}% de la ganancia del negocio − lo que compraste con él + lo que vuelve al vender esa mercancía. Ese dinero es tuyo: lo que ganes con la mercancía que compres con él es 100% tuyo y va directo a «Puedes retirar», sin repartirse.</p>
+              <p className="admin-hint">Puedes retirar = el {100 - reinvestPercent}% de la ganancia del negocio + la ganancia de tu dinero para reinvertir − tus gastos personales. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
             </Collapsible>
 
             <div className="seg-tabs">
@@ -1201,7 +1249,7 @@ export function AdminPanel() {
                 </div>
                 <p className="admin-order-customer">{order.customerName} · {order.phone}{order.address ? ` · ${order.address}` : ''}</p>
                 <ul className="admin-order-items">{order.items.map((item, index) => <li key={`${item.id}-${index}`}>
-                  <div>{item.quantity}× {item.name}<small>Costó {money(item.cost)} c/u · ganancia {money((item.price - item.cost) * item.quantity)}</small></div>
+                  <div>{item.quantity}× {item.name}<small>Costó {money(item.cost)} cada una · ganancia {money((item.price - item.cost) * item.quantity)}{(item.reinvQty ?? 0) > 0 ? (item.reinvQty === item.quantity ? ' · con el dinero para reinvertir' : ` · ${item.reinvQty} de ${item.quantity} con el dinero para reinvertir`) : ''}</small></div>
                   <span>{money(item.price * item.quantity)}</span>
                 </li>)}</ul>
                 <div className="admin-order-foot">
@@ -1467,10 +1515,10 @@ export function AdminPanel() {
       {editingPurchase && <div className="modal-wrap"><div className="modal-card">
         <button className="modal-close icon-button" onClick={() => setEditingPurchase(null)}><X /></button>
         <h2>Reponer (registrar compra)</h2>
-        <p>Pon cuántas compraste y a cuánto te salió cada una. Se suma a la existencia y se saca del dinero del negocio. Cada compra queda como un lote con su propio costo.</p>
+        <p>Pon cuántas compraste y a cuánto te salió cada una. Se suma a la existencia y se saca del dinero que elijas abajo. Cada compra queda como un lote con su propio costo.</p>
         <form className="product-form" onSubmit={handleSavePurchase}>
           <label>Producto
-            <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...purchaseDraftFor(productById.get(Number(event.target.value))), notes: current.notes })}>
+            <select required value={editingPurchase.productId} onChange={(event) => setEditingPurchase((current) => current && { ...purchaseDraftFor(productById.get(Number(event.target.value))), notes: current.notes, fund: current.fund })}>
               <option value="" disabled>Selecciona un producto</option>
               {[...data.products].sort((a, b) => a.name.localeCompare(b.name)).map((product) => <option key={product.id} value={product.id}>{product.name} (hay {product.stock})</option>)}
             </select>
@@ -1501,7 +1549,19 @@ export function AdminPanel() {
             </>
           )}
           <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
-          {purchaseTotal > 0 && <p className="order-edit-total">Total de la compra: <strong>{money(purchaseTotal)}</strong> · Dinero del negocio después: <strong>{money(capitalDisponible - purchaseTotal)}</strong></p>}
+          <div className="fund-choice" role="radiogroup" aria-label="¿Con qué dinero?">
+            <span className="fund-choice-title">¿Con qué dinero?</span>
+            {(['capital', 'reinversion'] as const).map((fund) => {
+              const balance = fund === 'capital' ? capitalDisponible : dineroReinvertir
+              const left = balance - purchaseTotal
+              return <label key={fund} className={`switch-row fund-option ${editingPurchase.fund === fund ? 'is-active' : ''}`}>
+                <input type="radio" name="purchase-fund" value={fund} checked={editingPurchase.fund === fund} onChange={() => setEditingPurchase((current) => current && { ...current, fund })} />
+                <span><b>{FUND_LABEL[fund]}</b><small>Hay {money(balance)}{purchaseTotal > 0 && <> · después quedan <em className={left < 0 ? 'is-negative' : ''}>{money(left)}</em></>}</small></span>
+              </label>
+            })}
+          </div>
+          {purchaseTotal > 0 && <p className="order-edit-total">Total de la compra: <strong>{money(purchaseTotal)}</strong></p>}
+          {purchaseTotal > 0 && (editingPurchase.fund === 'capital' ? capitalDisponible : dineroReinvertir) - purchaseTotal < 0 && <p className="admin-hint"><AlertTriangle size={14} />No alcanza: el {FUND_LABEL[editingPurchase.fund].toLowerCase()} quedaría en negativo. Revisa los números o elige el otro dinero.</p>}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy || !editingPurchase.productId}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
         </form>
