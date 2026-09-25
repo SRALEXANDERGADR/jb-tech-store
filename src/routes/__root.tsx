@@ -33,13 +33,15 @@ export const Route = createRootRoute({
         content: 'website',
       },
       // Imagen y enlace que salen cuando se comparte la tienda por WhatsApp,
-      // Facebook, etc. Si algún día se cambia a un dominio propio, cambiar
-      // también estas dos direcciones.
-      { property: 'og:url', content: 'https://jb-tech-store.gadrnet.workers.dev/' },
-      { property: 'og:image', content: 'https://jb-tech-store.gadrnet.workers.dev/favicon-512.png' },
+      // Facebook, etc.
+      { property: 'og:url', content: 'https://jbtechstore.com/' },
+      { property: 'og:image', content: 'https://jbtechstore.com/og-cover.png' },
+      { property: 'og:image:width', content: '1200' },
+      { property: 'og:image:height', content: '630' },
       { property: 'og:locale', content: 'es_DO' },
       { property: 'og:site_name', content: 'JB Tech Store' },
-      { name: 'twitter:card', content: 'summary' },
+      { name: 'twitter:card', content: 'summary_large_image' },
+      { name: 'twitter:image', content: 'https://jbtechstore.com/og-cover.png' },
       {
         name: 'theme-color',
         content: '#0b1220',
