@@ -2,12 +2,14 @@ import { createServerFn } from '@tanstack/react-start'
 import { env } from 'cloudflare:workers'
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { content, customers, expenses, imageTrash, orders, products, purchases } from '../../db/schema'
+import { content, customers, expenses, imageTrash, orders, products, purchases, pushSubscriptions } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail } from './email'
 import { deleteImageFile, pathFromDownloadUrl } from './github'
 import { lineName, normalizeVariants, optionPrice, optionStock, parseOptions, resolveOption, tracksOptionStock } from './variants'
 import type { ProductVariant } from './variants'
+import { generateVapidKeys, sendPush } from './push'
+import type { PushMessage, VapidKeys } from './push'
 
 // Días que un elemento permanece en papelera (productos, clientes, pedidos
 // e imágenes) antes de eliminarse definitivamente.
@@ -118,11 +120,14 @@ let schemaReady: Promise<void> | null = null
 function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
-      const result = await db.execute(sql`select count(*)::int as n from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name = 'option'))`)
-      const rows = ((result as unknown as { rows?: Array<{ n: number }> }).rows ?? (result as unknown as Array<{ n: number }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 2) return
+      const result = await db.execute(sql`select
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name = 'option')))
+        + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name = 'push_subscriptions') as n`)
+      const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
+      if (Number(rows[0]?.n ?? 0) >= 3) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
+      await db.execute(sql`CREATE TABLE IF NOT EXISTS "push_subscriptions" ("id" serial PRIMARY KEY, "endpoint" text NOT NULL UNIQUE, "p256dh" text NOT NULL, "auth" text NOT NULL, "label" text NOT NULL DEFAULT '', "created_at" timestamp NOT NULL DEFAULT now())`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
       throw error
@@ -427,7 +432,7 @@ export const getStorefront = createServerFn({ method: 'GET' }).handler(async () 
 
 // Configuración privada guardada en la tabla `content` que la tienda no
 // necesita (y que no debe verse en el código de la página).
-const PRIVATE_CONTENT_KEYS = new Set(['capitalInicial', 'reinvestPercent', 'notificationEmail'])
+const PRIVATE_CONTENT_KEYS = new Set(['capitalInicial', 'reinvestPercent', 'notificationEmail', 'vapidKeys'])
 
 export const createOrder = createServerFn({ method: 'POST' })
   .inputValidator((data: { name: string; phone: string; email: string; address: string; website?: string; items: CartLine[] }) => data)
@@ -481,6 +486,19 @@ export const createOrder = createServerFn({ method: 'POST' })
       await sendOrderNotificationEmail(env, notificationRow.value, { orderNumber, createdAt, customerName: data.name, email: data.email, phone: data.phone, address: data.address, total, items: calculated })
     }
 
+    // Aviso al teléfono (app del panel admin). Si algo falla aquí, el
+    // pedido ya quedó guardado igual: nunca se le muestra error al cliente.
+    try {
+      const units = calculated.reduce((sum, item) => sum + item.quantity, 0)
+      const names = calculated.map((item) => `${item.quantity}× ${item.name}`).join(', ')
+      await notifyAdmins({
+        title: `🛒 Nuevo pedido · ${formatMoney(total)}`,
+        body: `${data.name} pidió ${units} ${units === 1 ? 'artículo' : 'artículos'}: ${names}`.slice(0, 220),
+        url: '/admin?tab=pedidos',
+        tag: orderNumber,
+      })
+    } catch { /* sin aviso, pero el pedido está bien */ }
+
     return { orderNumber, total, orderId: order.id }
   })
 
@@ -507,7 +525,7 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
     products: productRows,
     orders: orderRows,
     customers: customerRows,
-    content: Object.fromEntries(contentRows.map((item) => [item.key, item.value])),
+    content: Object.fromEntries(contentRows.filter((item) => item.key !== 'vapidKeys').map((item) => [item.key, item.value])),
     purchases: purchaseRows,
     expenses: expenseRows,
     trash: { products: trashedProducts, orders: trashedOrders, customers: trashedCustomers, images: trashedImages },
@@ -942,4 +960,83 @@ export const deleteExpense = createServerFn({ method: 'POST' }).inputValidator((
   await requireAdmin()
   await db.delete(expenses).where(eq(expenses.id, data))
   return true
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// NOTIFICACIONES AL TELÉFONO (app del panel admin) — ver src/lib/push.ts
+// ───────────────────────────────────────────────────────────────────────
+const PUSH_SUBJECT = 'https://jbtechstore.com'
+
+function formatMoney(cents: number) {
+  return new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(cents / 100)
+}
+
+/** Claves VAPID de la tienda: se crean solas la primera vez y se guardan
+ * (juntas, en una sola fila) en la tabla de contenido. Nunca se mandan a
+ * la tienda pública ni al panel. */
+async function getVapidKeys(): Promise<VapidKeys> {
+  const read = async () => {
+    const [row] = await db.select().from(content).where(eq(content.key, 'vapidKeys')).limit(1)
+    if (!row?.value) return null
+    try { return JSON.parse(row.value) as VapidKeys } catch { return null }
+  }
+  const existing = await read()
+  if (existing?.publicKey && existing.privateJwk) return existing
+  const fresh = await generateVapidKeys()
+  await db.insert(content).values({ key: 'vapidKeys', value: JSON.stringify(fresh) }).onConflictDoNothing()
+  return (await read()) ?? fresh
+}
+
+async function sendToSubscriptions(rows: Array<{ id: number; endpoint: string; p256dh: string; auth: string }>, message: PushMessage) {
+  if (!rows.length) return { sent: 0, failed: 0 }
+  const keys = await getVapidKeys()
+  const results = await Promise.all(rows.map((row) => sendPush(row, message, keys, PUSH_SUBJECT)))
+  // Aparatos que ya no existen (app desinstalada o permiso quitado): fuera.
+  const gone = rows.filter((_, index) => results[index] === 'gone').map((row) => row.id)
+  if (gone.length) await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.id, gone))
+  return { sent: results.filter((result) => result === 'ok').length, failed: results.filter((result) => result !== 'ok').length }
+}
+
+async function notifyAdmins(message: PushMessage) {
+  await ensureSchema()
+  const rows = await db.select().from(pushSubscriptions)
+  return sendToSubscriptions(rows, message)
+}
+
+/** Lo que la app necesita para activar las notificaciones en un aparato. */
+export const getPushSetup = createServerFn({ method: 'GET' }).handler(async () => {
+  await requireAdmin()
+  const keys = await getVapidKeys()
+  const rows = await db.select({ id: pushSubscriptions.id, endpoint: pushSubscriptions.endpoint, label: pushSubscriptions.label, createdAt: pushSubscriptions.createdAt }).from(pushSubscriptions).orderBy(desc(pushSubscriptions.createdAt))
+  return { publicKey: keys.publicKey, devices: rows.map((row) => ({ id: row.id, endpoint: row.endpoint, label: row.label, createdAt: row.createdAt })) }
+})
+
+export const savePushSubscription = createServerFn({ method: 'POST' })
+  .inputValidator((data: { endpoint: string; p256dh: string; auth: string; label: string }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    const endpoint = String(data.endpoint || '')
+    if (!/^https:\/\//.test(endpoint) || endpoint.length > 1000) throw new Error('La suscripción del navegador no es válida.')
+    if (!data.p256dh || !data.auth) throw new Error('Faltan las claves de la suscripción.')
+    const values = { endpoint, p256dh: String(data.p256dh).slice(0, 200), auth: String(data.auth).slice(0, 100), label: String(data.label || '').slice(0, 80) }
+    await db.insert(pushSubscriptions).values(values).onConflictDoUpdate({ target: pushSubscriptions.endpoint, set: { p256dh: values.p256dh, auth: values.auth, label: values.label } })
+    return true
+  })
+
+export const removePushSubscription = createServerFn({ method: 'POST' }).inputValidator((endpoint: string) => endpoint).handler(async ({ data }) => {
+  await requireAdmin()
+  await db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, String(data || '')))
+  return true
+})
+
+/** Manda un aviso de prueba (a este aparato o, sin endpoint, a todos). */
+export const sendTestPush = createServerFn({ method: 'POST' }).inputValidator((endpoint: string) => endpoint).handler(async ({ data }) => {
+  await requireAdmin()
+  const rows = data
+    ? await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.endpoint, String(data)))
+    : await db.select().from(pushSubscriptions)
+  if (!rows.length) throw new Error('Este aparato todavía no tiene las notificaciones activadas.')
+  const result = await sendToSubscriptions(rows, { title: '🔔 Notificaciones activadas', body: 'Así te va a llegar cada pedido nuevo de la tienda.', url: '/admin?tab=pedidos', tag: 'prueba' })
+  if (!result.sent) throw new Error('No se pudo entregar la prueba. Desactiva y vuelve a activar las notificaciones en este aparato.')
+  return result
 })

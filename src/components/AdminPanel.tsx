@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ChangeEvent, ComponentType, FormEvent, ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  AlertTriangle, Check, ChevronLeft, Download, Layers, LayoutDashboard, ListOrdered, LogOut, Package,
+  AlertTriangle, Bell, BellOff, Check, ChevronLeft, Download, Layers, Smartphone, LayoutDashboard, ListOrdered, LogOut, Package,
   Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, ShoppingCart, SlidersHorizontal, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
@@ -10,7 +10,9 @@ import {
   getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
   recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
   saveProduct, splitPurchase, updateOrder, updateOrderStatus,
+  getPushSetup, removePushSubscription, savePushSubscription, sendTestPush,
 } from '@/lib/store'
+import { fromBase64Url } from '@/lib/push'
 import {
   hasOwnPrice, normalizeVariants, optionFromName, optionPrice, optionStock, parseOptions, priceRange, tracksOptionStock,
 } from '@/lib/variants'
@@ -312,6 +314,165 @@ async function uploadFile(original: File): Promise<string> {
   return result.url
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// APP Y NOTIFICACIONES — instalar el panel como app ("JB Admin") y
+// activar el aviso de cada pedido nuevo en este teléfono o computadora.
+// ───────────────────────────────────────────────────────────────────────
+type PushState = 'cargando' | 'no-soportado' | 'bloqueado' | 'apagado' | 'activo'
+type PushDevice = { id: number; endpoint: string; label: string; createdAt: string }
+type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }
+
+function deviceLabel() {
+  const ua = navigator.userAgent
+  const system = /Android/i.test(ua) ? 'Android' : /iPhone|iPad/i.test(ua) ? 'iPhone' : /Windows/i.test(ua) ? 'Windows' : /Mac/i.test(ua) ? 'Mac' : 'Computadora'
+  const browser = /SamsungBrowser/i.test(ua) ? 'Samsung Internet' : /Edg\//i.test(ua) ? 'Edge' : /Firefox/i.test(ua) ? 'Firefox' : /Chrome/i.test(ua) ? 'Chrome' : 'Navegador'
+  return `${system} · ${browser}`
+}
+
+function isInstalledApp() {
+  return typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as any).standalone === true)
+}
+
+function AppAndNotifications() {
+  const [state, setState] = useState<PushState>('cargando')
+  const [devices, setDevices] = useState<PushDevice[]>([])
+  const [endpoint, setEndpoint] = useState('')
+  const [working, setWorking] = useState(false)
+  const [message, setMessage] = useState('')
+  const [installEvent, setInstallEvent] = useState<InstallPromptEvent | null>(null)
+  const [installed, setInstalled] = useState(false)
+
+  async function load() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { setState('no-soportado'); return }
+    const registration = await navigator.serviceWorker.register('/admin-sw.js', { scope: '/admin' })
+    const setup = await getPushSetup()
+    setDevices(setup.devices as unknown as PushDevice[])
+    const subscription = await registration.pushManager.getSubscription()
+    setEndpoint(subscription?.endpoint ?? '')
+    if (Notification.permission === 'denied') setState('bloqueado')
+    else if (subscription && setup.devices.some((device) => device.endpoint === subscription.endpoint)) setState('activo')
+    else setState('apagado')
+  }
+
+  useEffect(() => {
+    setInstalled(isInstalledApp())
+    load().catch(() => setState('no-soportado'))
+    const onPrompt = (event: Event) => { event.preventDefault(); setInstallEvent(event as InstallPromptEvent) }
+    const onInstalled = () => { setInstalled(true); setInstallEvent(null) }
+    window.addEventListener('beforeinstallprompt', onPrompt)
+    window.addEventListener('appinstalled', onInstalled)
+    return () => { window.removeEventListener('beforeinstallprompt', onPrompt); window.removeEventListener('appinstalled', onInstalled) }
+  }, [])
+
+  async function run(action: () => Promise<void>) {
+    setWorking(true)
+    setMessage('')
+    try { await action() } catch (caught) { setMessage(caught instanceof Error ? caught.message : 'Algo salió mal. Intenta de nuevo.') } finally { setWorking(false) }
+  }
+
+  const enable = () => run(async () => {
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') {
+      setState(permission === 'denied' ? 'bloqueado' : 'apagado')
+      throw new Error('Para recibir los pedidos tienes que tocar «Permitir» cuando el teléfono pregunte.')
+    }
+    const registration = await navigator.serviceWorker.register('/admin-sw.js', { scope: '/admin' })
+    await navigator.serviceWorker.ready
+    const setup = await getPushSetup()
+    // Si había una suscripción vieja (ej. de otras claves), se cambia por una nueva.
+    const old = await registration.pushManager.getSubscription()
+    if (old) await old.unsubscribe().catch(() => false)
+    const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromBase64Url(setup.publicKey) })
+    const json = subscription.toJSON()
+    await savePushSubscription({ data: { endpoint: subscription.endpoint, p256dh: json.keys?.p256dh ?? '', auth: json.keys?.auth ?? '', label: deviceLabel() } })
+    await sendTestPush({ data: subscription.endpoint })
+    await load()
+    setMessage('Listo. Te acaba de llegar una notificación de prueba: así te van a llegar los pedidos.')
+  })
+
+  const disable = () => run(async () => {
+    const registration = await navigator.serviceWorker.getRegistration('/admin')
+    const subscription = await registration?.pushManager.getSubscription()
+    if (subscription) {
+      await removePushSubscription({ data: subscription.endpoint })
+      await subscription.unsubscribe().catch(() => false)
+    }
+    await load()
+    setMessage('Notificaciones apagadas en este aparato.')
+  })
+
+  const test = () => run(async () => {
+    await sendTestPush({ data: endpoint })
+    setMessage('Prueba enviada. Debe llegarte en unos segundos.')
+  })
+
+  const removeDevice = (device: PushDevice) => run(async () => {
+    if (!window.confirm(`¿Dejar de mandar avisos a «${device.label || 'ese aparato'}»?`)) return
+    await removePushSubscription({ data: device.endpoint })
+    await load()
+  })
+
+  const install = () => run(async () => {
+    if (!installEvent) return
+    await installEvent.prompt()
+    const choice = await installEvent.userChoice
+    if (choice.outcome === 'accepted') setInstalled(true)
+    setInstallEvent(null)
+  })
+
+  return (
+    <div className="app-card">
+      <div className="app-card-head">
+        <img src="/admin-192.png" alt="" />
+        <div><strong>App y avisos de pedidos</strong><span>Instala el panel como app y te llega una notificación (con el punto en el ícono) cada vez que un cliente hace un pedido, aunque la app esté cerrada.</span></div>
+      </div>
+
+      <div className="app-step">
+        <b>1</b>
+        <div>
+          <strong>Instalar la app</strong>
+          {installed
+            ? <span className="app-ok"><Check size={14} />Ya la estás usando como app.</span>
+            : installEvent
+            ? <button type="button" className="primary-button" disabled={working} onClick={install}><Smartphone size={16} />Instalar app</button>
+            : <span>En Chrome: toca el menú <b>⋮</b> (arriba a la derecha) → <b>«Instalar app»</b> o <b>«Agregar a pantalla principal»</b>. En la PC: el ícono de instalar en la barra de dirección.</span>}
+        </div>
+      </div>
+
+      <div className="app-step">
+        <b>2</b>
+        <div>
+          <strong>Avisos en este aparato</strong>
+          {state === 'cargando' && <span>Revisando…</span>}
+          {state === 'no-soportado' && <span>Este navegador no puede recibir notificaciones. Abre el panel en Chrome (Android o PC) o en Edge.</span>}
+          {state === 'bloqueado' && <span className="app-warn">Las notificaciones están bloqueadas para esta página. Toca el candado junto a la dirección (o Ajustes del teléfono → Apps → JB Admin → Notificaciones) y ponlas en «Permitir»; luego vuelve aquí.</span>}
+          {state === 'apagado' && <button type="button" className="primary-button" disabled={working} onClick={enable}><Bell size={16} />{working ? 'Activando…' : 'Activar notificaciones'}</button>}
+          {state === 'activo' && <div className="app-actions">
+            <span className="app-ok"><Check size={14} />Activadas en este aparato.</span>
+            <button type="button" className="ghost-button" disabled={working} onClick={test}><Bell size={15} />Probar</button>
+            <button type="button" className="ghost-button" disabled={working} onClick={disable}><BellOff size={15} />Apagar</button>
+          </div>}
+        </div>
+      </div>
+
+      {message && <p className="app-message">{message}</p>}
+
+      {devices.length > 0 && (
+        <div className="app-devices">
+          <span>Los pedidos avisan a {devices.length === 1 ? '1 aparato' : `${devices.length} aparatos`}:</span>
+          {devices.map((device) => (
+            <div key={device.id} className="app-device">
+              <Smartphone size={15} />
+              <span>{device.label || 'Aparato'}{device.endpoint === endpoint ? ' (este)' : ''} · desde {shortDate(device.createdAt)}</span>
+              <button type="button" aria-label="Quitar" disabled={working} onClick={() => removeDevice(device)}><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function daysLeft(deletedAt: string) {
   const elapsed = Date.now() - new Date(deletedAt).getTime()
   return Math.max(0, 30 - Math.floor(elapsed / 86400000))
@@ -362,6 +523,21 @@ export function AdminPanel() {
       setAuthenticated(ok)
       if (ok) await refresh().catch((caught) => setError(caught instanceof Error ? caught.message : 'No pudimos cargar los datos.'))
     })
+  }, [])
+
+  // La notificación de un pedido abre /admin?tab=pedidos. Y al abrir o
+  // volver a la app se quitan el punto del ícono y las notificaciones ya vistas.
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get('tab')
+    if (wanted && ['resumen', 'finanzas', 'catalogo', 'pedidos', 'clientes', 'contenido', 'papelera'].includes(wanted)) setTab(wanted as Tab)
+    const clearBadge = () => {
+      if (document.visibilityState !== 'visible') return
+      try { (navigator as any).clearAppBadge?.()?.catch?.(() => {}) } catch { /* sin soporte */ }
+      navigator.serviceWorker?.getRegistration('/admin').then((registration) => registration?.getNotifications().then((list) => list.forEach((item) => item.close()))).catch(() => {})
+    }
+    clearBadge()
+    document.addEventListener('visibilitychange', clearBadge)
+    return () => document.removeEventListener('visibilitychange', clearBadge)
   }, [])
 
   // Recién creado un producto, se abre de una vez «Reponer» para registrar
@@ -778,6 +954,7 @@ export function AdminPanel() {
         {tab === 'resumen' && (
           <section>
             <h2>Inicio</h2>
+            <AppAndNotifications />
             <div className="quick-actions">
               <button type="button" onClick={() => openSale()}><ShoppingCart size={20} /><span>Registrar venta</span></button>
               <button type="button" onClick={() => openPurchase()}><ShoppingBag size={20} /><span>Registrar compra</span></button>

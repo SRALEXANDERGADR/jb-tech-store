@@ -167,3 +167,18 @@ export const expenses = pgTable('expenses', {
   amount: integer('amount').notNull(), // centavos
   createdAt: timestamp('created_at').notNull().defaultNow(),
 })
+
+// ───────────────────────────────────────────────────────────────────────
+// TELÉFONOS / COMPUTADORAS QUE RECIBEN NOTIFICACIONES — cada vez que se
+// activan las notificaciones en la app del panel admin se guarda aquí la
+// "dirección" push de ese aparato. Si la app se desinstala o se quita el
+// permiso, el servicio de push responde que ya no existe y se borra sola.
+// ───────────────────────────────────────────────────────────────────────
+export const pushSubscriptions = pgTable('push_subscriptions', {
+  id: serial('id').primaryKey(),
+  endpoint: text('endpoint').notNull().unique(),
+  p256dh: text('p256dh').notNull(),
+  auth: text('auth').notNull(),
+  label: text('label').notNull().default(''), // ej. "Android · Chrome"
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+})
