@@ -420,8 +420,11 @@ function AppAndNotifications() {
     const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromBase64Url(setup.publicKey) })
     const json = subscription.toJSON()
     await savePushSubscription({ data: { endpoint: subscription.endpoint, p256dh: json.keys?.p256dh ?? '', auth: json.keys?.auth ?? '', label: deviceLabel() } })
-    await sendTestPush({ data: subscription.endpoint })
-    await load()
+    try {
+      await sendTestPush({ data: subscription.endpoint })
+    } finally {
+      await load() // la pantalla siempre muestra el estado real, aunque la prueba falle
+    }
     setMessage('Listo. Te acaba de llegar una notificación de prueba: así te van a llegar los pedidos.')
   })
 
@@ -437,7 +440,11 @@ function AppAndNotifications() {
   })
 
   const test = () => run(async () => {
-    await sendTestPush({ data: endpoint })
+    try {
+      await sendTestPush({ data: endpoint })
+    } finally {
+      await load()
+    }
     setMessage('Prueba enviada. Debe llegarte en unos segundos.')
   })
 

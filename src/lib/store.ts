@@ -988,13 +988,18 @@ async function getVapidKeys(): Promise<VapidKeys> {
 }
 
 async function sendToSubscriptions(rows: Array<{ id: number; endpoint: string; p256dh: string; auth: string }>, message: PushMessage) {
-  if (!rows.length) return { sent: 0, failed: 0 }
+  if (!rows.length) return { sent: 0, failed: 0, problem: '' }
   const keys = await getVapidKeys()
   const results = await Promise.all(rows.map((row) => sendPush(row, message, keys, PUSH_SUBJECT)))
   // Aparatos que ya no existen (app desinstalada o permiso quitado): fuera.
-  const gone = rows.filter((_, index) => results[index] === 'gone').map((row) => row.id)
+  const gone = rows.filter((_, index) => results[index].result === 'gone').map((row) => row.id)
   if (gone.length) await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.id, gone))
-  return { sent: results.filter((result) => result === 'ok').length, failed: results.filter((result) => result !== 'ok').length }
+  const firstProblem = results.find((item) => item.result !== 'ok')
+  return {
+    sent: results.filter((item) => item.result === 'ok').length,
+    failed: results.filter((item) => item.result !== 'ok').length,
+    problem: firstProblem ? `${firstProblem.result === 'gone' ? 'el aparato ya no acepta avisos' : 'error'} (código ${firstProblem.status || 'sin respuesta'}${firstProblem.detail ? `: ${firstProblem.detail}` : ''})` : '',
+  }
 }
 
 async function notifyAdmins(message: PushMessage) {
@@ -1037,6 +1042,6 @@ export const sendTestPush = createServerFn({ method: 'POST' }).inputValidator((e
     : await db.select().from(pushSubscriptions)
   if (!rows.length) throw new Error('Este aparato todavía no tiene las notificaciones activadas.')
   const result = await sendToSubscriptions(rows, { title: '🔔 Notificaciones activadas', body: 'Así te va a llegar cada pedido nuevo de la tienda.', url: '/admin?tab=pedidos', tag: 'prueba' })
-  if (!result.sent) throw new Error('No se pudo entregar la prueba. Desactiva y vuelve a activar las notificaciones en este aparato.')
+  if (!result.sent) throw new Error(`No se pudo entregar la prueba: ${result.problem}. Toca «Activar notificaciones» otra vez.`)
   return result
 })

@@ -94,9 +94,13 @@ export async function encryptPayload(
   return concat(salt, recordSize, new Uint8Array([serverPublic.length]), serverPublic, cipher)
 }
 
-/** Manda un aviso a un teléfono. Devuelve 'gone' si esa suscripción ya no
- * existe (app desinstalada o permiso quitado) para borrarla de la base. */
-export async function sendPush(subscription: PushSubscriptionRow, message: PushMessage, keys: VapidKeys, subject: string): Promise<'ok' | 'gone' | 'error'> {
+/** Manda un aviso a un teléfono. `result` es 'gone' si esa suscripción ya
+ * no existe (app desinstalada o permiso quitado) para borrarla de la base;
+ * `status`/`detail` dicen qué respondió el servicio de push (para avisar
+ * en el panel si algo falla). */
+export type PushResult = { result: 'ok' | 'gone' | 'error'; status: number; detail: string }
+
+export async function sendPush(subscription: PushSubscriptionRow, message: PushMessage, keys: VapidKeys, subject: string): Promise<PushResult> {
   try {
     const body = await encryptPayload(encoder.encode(JSON.stringify(message)), subscription)
     const response = await fetch(subscription.endpoint, {
@@ -110,9 +114,10 @@ export async function sendPush(subscription: PushSubscriptionRow, message: PushM
       },
       body,
     })
-    if (response.status === 404 || response.status === 410) return 'gone'
-    return response.ok ? 'ok' : 'error'
-  } catch {
-    return 'error'
+    const detail = response.ok ? '' : (await response.text().catch(() => '')).slice(0, 160)
+    if (response.status === 404 || response.status === 410) return { result: 'gone', status: response.status, detail }
+    return { result: response.ok ? 'ok' : 'error', status: response.status, detail }
+  } catch (error) {
+    return { result: 'error', status: 0, detail: error instanceof Error ? error.message.slice(0, 160) : 'sin conexión' }
   }
 }
