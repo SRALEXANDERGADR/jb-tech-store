@@ -552,13 +552,16 @@ export function AdminPanel() {
   const capitalUsado = data.purchases.reduce((sum, purchase) => sum + purchase.totalCost, 0)
   const capitalRecuperado = costoVentas
   const capitalInicial = Number(data.content.capitalInicial || 0)
-  const capitalDisponible = capitalInicial - capitalUsado + capitalRecuperado
+  // Los gastos del NEGOCIO salen del capital del negocio (el dinero con
+  // que se compra mercancía), no de la ganancia: así la ganancia que se
+  // reparte entre reinversión y "Para ti" queda completa. Los gastos
+  // PERSONALES sí salen solo de lo que te toca a ti.
   const gastosNegocio = data.expenses.filter((expense) => expense.type === 'negocio').reduce((sum, expense) => sum + expense.amount, 0)
+  const capitalDisponible = capitalInicial - capitalUsado + capitalRecuperado - gastosNegocio
   const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount, 0)
-  const gananciaNeta = gananciaBruta - gastosNegocio
   const reinvestPercent = Number(data.content.reinvestPercent ?? 70)
-  const reinversion = Math.round((gananciaNeta * reinvestPercent) / 100)
-  const paraTi = gananciaNeta - reinversion
+  const reinversion = Math.round((gananciaBruta * reinvestPercent) / 100)
+  const paraTi = gananciaBruta - reinversion
   const disponibleRetirar = paraTi - gastosPersonales
 
   const TABS: Array<{ id: Tab; label: string; icon: ComponentType<{ size?: number }> }> = [
@@ -647,6 +650,7 @@ export function AdminPanel() {
               <div className="admin-card"><span>Capital inicial</span><strong>{money(capitalInicial)}</strong></div>
               <div className="admin-card"><span>Capital usado (compras)</span><strong>{money(capitalUsado)}</strong></div>
               <div className="admin-card"><span>Capital recuperado (ventas)</span><strong>{money(capitalRecuperado)}</strong></div>
+              <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
               <div className="admin-card"><span>Capital disponible</span><strong>{money(capitalDisponible)}</strong></div>
             </div>
 
@@ -654,9 +658,7 @@ export function AdminPanel() {
             <div className="admin-cards">
               <div className="admin-card"><span>Ingresos (pedidos pagados)</span><strong>{money(ingresos)}</strong></div>
               <div className="admin-card"><span>Costo de ventas</span><strong>{money(costoVentas)}</strong></div>
-              <div className="admin-card"><span>Ganancia bruta</span><strong>{money(gananciaBruta)}</strong></div>
-              <div className="admin-card"><span>Gastos del negocio</span><strong>{money(gastosNegocio)}</strong></div>
-              <div className="admin-card"><span>Ganancia neta</span><strong>{money(gananciaNeta)}</strong></div>
+              <div className="admin-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong></div>
               <div className="admin-card"><span>Reinversión ({reinvestPercent}%)</span><strong>{money(reinversion)}</strong></div>
               <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
               <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
@@ -665,7 +667,7 @@ export function AdminPanel() {
               <div className="admin-card"><span>Disponible para retirar</span><strong>{money(disponibleRetirar)}</strong></div>
               <div className="admin-card"><span>Por cobrar ({porCobrarOrders.length} pedidos)</span><strong>{money(porCobrar)}</strong></div>
             </div>
-            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" (y que no estén cancelados). Un pedido sin pagar todavía no mueve el capital: aparece en "Por cobrar".</p>
+            <p className="admin-hint"><AlertTriangle size={14} />Solo cuentan los pedidos marcados "Pagado" (y que no estén cancelados). Un pedido sin pagar todavía no mueve el capital: aparece en "Por cobrar". Los gastos del negocio salen del Capital disponible; los gastos personales salen de "Para ti".</p>
             {uncostedProducts.length > 0 && (
               <p className="form-error">
                 {uncostedProducts.length === 1 ? '1 producto tiene' : `${uncostedProducts.length} productos tienen`} unidades en stock sin una compra registrada, así que su costo cuenta como RD$0 y la ganancia sale más alta de lo real: {uncostedProducts.slice(0, 5).map((product) => product.name).join(', ')}{uncostedProducts.length > 5 ? '…' : ''}. Para corregirlo, pon esas existencias en 0 en Catálogo y regístralas con «Registrar compra». <button type="button" className="link-button" onClick={() => { setTab('catalogo'); setQuery(''); setCatalogFilter('sincosto') }}>Ver cuáles son</button>
@@ -1098,8 +1100,8 @@ export function AdminPanel() {
         <form className="product-form" onSubmit={handleSaveExpense}>
           <label>Tipo
             <select value={editingExpense.type} onChange={(event) => setEditingExpense((current) => current && { ...current, type: event.target.value as 'negocio' | 'personal' })}>
-              <option value="negocio">Gasto del negocio (resta de la ganancia)</option>
-              <option value="personal">Gasto o retiro personal (resta de lo tuyo)</option>
+              <option value="negocio">Gasto del negocio (sale del capital del negocio)</option>
+              <option value="personal">Gasto o retiro personal (sale de lo tuyo)</option>
             </select>
           </label>
           <label>Descripción<input required value={editingExpense.description} onChange={(event) => setEditingExpense((current) => current && { ...current, description: event.target.value })} placeholder="Ej. transporte, comida, retiro..." /></label>

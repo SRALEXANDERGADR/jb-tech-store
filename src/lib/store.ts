@@ -691,7 +691,7 @@ export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator(
 })
 
 // Registra un gasto del negocio o un gasto/retiro personal. `type`
-// 'negocio' se resta de la ganancia antes de calcular la reinversión;
+// 'negocio' sale del Capital disponible (no toca la ganancia a repartir);
 // 'personal' se resta de lo que ya le corresponde a Yeilin, sin tocar la
 // ganancia del negocio.
 export const recordExpense = createServerFn({ method: 'POST' })

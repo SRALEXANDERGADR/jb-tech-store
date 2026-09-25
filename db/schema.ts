@@ -140,7 +140,7 @@ export const purchases = pgTable('purchases', {
 
 // ───────────────────────────────────────────────────────────────────────
 // GASTOS — reemplaza la hoja "Gastos". `type` separa gasto del negocio
-// (se resta de la ganancia antes de calcular la reinversión) de gasto o
+// (sale del Capital disponible del negocio) de gasto o
 // retiro personal (se resta de lo que ya le toca a Yeilin, no afecta la
 // ganancia del negocio). Esto reemplaza la mezcla confusa de "Gastos" y
 // "gastos personales" que tenía el Excel.
