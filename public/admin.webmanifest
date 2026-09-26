@@ -4,7 +4,7 @@
   "short_name": "JB Admin",
   "description": "Panel de JB Tech Store: pedidos, productos y finanzas, con aviso de cada pedido nuevo.",
   "start_url": "/admin",
-  "scope": "/admin",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0b1220",
