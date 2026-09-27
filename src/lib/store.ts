@@ -5,7 +5,7 @@ import { db } from '../../db'
 import { content, customers, expenses, imageTrash, orders, products, purchases, pushSubscriptions } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail } from './email'
-import { deleteImageFile, pathFromDownloadUrl } from './github'
+import { deleteImage, imagePathFromUrl } from './fotos'
 import { lineName, normalizeVariants, optionPrice, optionStock, parseOptions, resolveOption, tracksOptionStock } from './variants'
 import type { ProductVariant } from './variants'
 import { generateVapidKeys, sendPush } from './push'
@@ -404,13 +404,12 @@ async function requireAdmin() {
   await ensureSchema()
 }
 
-// Envía una imagen (por su download_url) a la papelera de imágenes. Si la
-// URL no pertenece al repo configurado (ej. un placeholder de la semilla
-// inicial, o una URL externa pegada a mano), no hace nada: solo
-// administramos lo que nosotros mismos subimos a GitHub.
+// Envía una imagen a la papelera de imágenes. Si la URL no es de una foto
+// que subimos nosotros (a GitHub o a R2), ej. un placeholder de la semilla
+// inicial o una URL externa pegada a mano, no hace nada.
 async function trashImage(url: string, reason: string) {
   if (!url) return
-  const path = pathFromDownloadUrl(env, url)
+  const path = imagePathFromUrl(env, url)
   if (!path) return
   await db.insert(imageTrash).values({ path, url, reason })
 }
@@ -442,7 +441,7 @@ async function cleanupExpired() {
   try {
     const expiredImages = await db.select().from(imageTrash).where(lt(imageTrash.deletedAt, cutoff))
     for (const image of expiredImages) {
-      try { await deleteImageFile(env, image.path) } catch { /* si GitHub falla, se reintenta luego: la fila no se borra */ continue }
+      try { await deleteImage(env, image.path) } catch { /* si GitHub o R2 fallan, se reintenta luego: la fila no se borra */ continue }
       await db.delete(imageTrash).where(eq(imageTrash.id, image.id))
     }
   } catch { /* idem */ }

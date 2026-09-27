@@ -9,6 +9,9 @@
     "GITHUB_BRANCH": "main",
     "GITHUB_UPLOAD_PATH": "public/uploads"
   },
+  // Fotos nuevas de productos (ver src/lib/fotos.ts). El bucket tiene que
+  // existir en la cuenta de Cloudflare antes de publicar, o el deploy falla.
+  "r2_buckets": [{ "binding": "FOTOS", "bucket_name": "jb-tech-store-fotos" }],
   "observability": {
     "enabled": true
   }

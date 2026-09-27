@@ -9,11 +9,12 @@ Lee todo antes de tocar nada. (Este repo es PÚBLICO: aquí nunca van contraseñ
 
 ## El proyecto
 - Tienda online **JB Tech Store**: productos tecnológicos (covers, cargadores, audífonos...) en República Dominicana. No cobra con tarjeta: el cliente hace el pedido y se coordina por WhatsApp.
-- Stack: React + **TanStack Start** en **Cloudflare Workers**, base de datos **Neon Postgres** (drizzle-orm con driver `neon-http`, sin transacciones interactivas), las fotos se suben al repo de GitHub (`public/uploads`) y se sirven desde raw.githubusercontent.com.
+- Stack: React + **TanStack Start** en **Cloudflare Workers**, base de datos **Neon Postgres** (drizzle-orm con driver `neon-http`, sin transacciones interactivas), las fotos nuevas se guardan en **Cloudflare R2** (bucket `jb-tech-store-fotos`, binding `FOTOS`) y se sirven desde `/fotos/<nombre>` (`src/lib/fotos.ts` y `src/routes/fotos/$.ts`). Las fotos viejas siguen en el repo de GitHub (`public/uploads`, servidas desde raw.githubusercontent.com) y funcionan igual. Si el Worker no tuviera R2, la subida vuelve sola a GitHub.
 - **Todo el dinero se guarda en centavos** (RD$350 = 35000).
 - Archivos principales:
   - `src/lib/store.ts`: todas las funciones del servidor (pedidos, productos, compras/lotes FIFO, Finanzas, notificaciones).
   - `src/lib/variants.ts`: precio y cantidad por opción (lo usan la tienda, el panel y el servidor).
+  - `src/lib/fotos.ts`: subir y borrar fotos (R2; GitHub como respaldo y para las fotos viejas).
   - `src/lib/push.ts`: notificaciones push (Web Push hecho a mano con WebCrypto, probado contra el ejemplo oficial del RFC 8291).
   - `src/components/AdminPanel.tsx`: todo el panel admin (aquí se calcula Finanzas).
   - `src/components/Storefront.tsx`: la tienda.
