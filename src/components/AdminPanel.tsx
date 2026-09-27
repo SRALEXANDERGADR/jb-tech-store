@@ -704,17 +704,30 @@ export function AdminPanel() {
   async function handleMigrateImages() {
     setBusy(true)
     setError('')
+    let fotos = 0
+    let productos = 0
+    const errores: string[] = []
     try {
-      const result = await migrateGithubImagesToR2()
+      // Cada llamada mueve un grupo chico de fotos (ver MIGRATE_BATCH en
+      // store.ts): con muchas de una vez, Cloudflare corta la conexión a
+      // medio camino. Por eso se repite sola hasta que ya no quede nada.
+      for (let vueltas = 0; vueltas < 40; vueltas++) {
+        const result = await migrateGithubImagesToR2()
+        fotos += result.fotosEncontradas
+        productos += result.productosActualizados
+        errores.push(...result.errores)
+        if (!result.quedan) break
+      }
       setNotice(
-        result.fotosEncontradas === 0
+        fotos === 0
           ? 'No quedaba ninguna foto en GitHub: todo está en R2.'
-          : `Listo: ${result.fotosEncontradas} foto(s) movidas a R2, ${result.productosActualizados} producto(s) actualizados.${result.errores.length ? ` ${result.errores.length} con error, revisa la consola.` : ''}`,
+          : `Listo: ${fotos} foto(s) movidas a R2, ${productos} producto(s) actualizados.${errores.length ? ` ${errores.length} con error, revisa la consola.` : ''}`,
       )
-      if (result.errores.length) console.error('Errores al migrar fotos:', result.errores)
+      if (errores.length) console.error('Errores al migrar fotos:', errores)
       await refresh()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'No pudimos migrar las fotos.')
+      setError(`${caught instanceof Error ? caught.message : 'No pudimos migrar las fotos.'} (fotos movidas antes del error: ${fotos})`)
+      await refresh()
     } finally {
       setBusy(false)
     }
