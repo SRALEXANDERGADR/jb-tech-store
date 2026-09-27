@@ -11,6 +11,7 @@ import {
   recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
   saveProduct, splitPurchase, updateOrder, updateOrderStatus,
   getPushSetup, removePushSubscription, savePushSubscription, sendTestPush,
+  migrateGithubImagesToR2,
 } from '@/lib/store'
 import { fromBase64Url } from '@/lib/push'
 import {
@@ -697,6 +698,28 @@ export function AdminPanel() {
     if (createdId) setPendingRestock(createdId)
   }
 
+  // Botón de una sola vez para pasar a R2 las fotos que quedaron en GitHub
+  // de antes de tener el almacén R2. Se puede borrar de aquí (y de
+  // src/lib/store.ts) una vez que ya no encuentre nada que migrar.
+  async function handleMigrateImages() {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await migrateGithubImagesToR2()
+      setNotice(
+        result.fotosEncontradas === 0
+          ? 'No quedaba ninguna foto en GitHub: todo está en R2.'
+          : `Listo: ${result.fotosEncontradas} foto(s) movidas a R2, ${result.productosActualizados} producto(s) actualizados.${result.errores.length ? ` ${result.errores.length} con error, revisa la consola.` : ''}`,
+      )
+      if (result.errores.length) console.error('Errores al migrar fotos:', result.errores)
+      await refresh()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'No pudimos migrar las fotos.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || !editing) return
@@ -1364,9 +1387,12 @@ export function AdminPanel() {
               </div>)}
               {!data.trash.customers.length && <p className="admin-empty">Vacío.</p>}
             </div>
+            <h3>Fotos antiguas</h3>
+            <p className="admin-hint">Fotos de productos guardadas en GitHub antes de tener el almacén R2. Muévelas a R2 para que subir fotos no vuelva a publicar toda la tienda.</p>
+            <button type="button" disabled={busy} onClick={handleMigrateImages}><Upload size={15} />Mover fotos de GitHub a R2</button>
             {data.trash.images.length > 0 && <>
               <h3>Imágenes en espera de borrado</h3>
-              <p className="admin-hint">Se borran solas de GitHub cuando corresponda; esta lista es solo informativa.</p>
+              <p className="admin-hint">Se borran solas cuando corresponda; esta lista es solo informativa.</p>
               <div className="admin-table">
                 {data.trash.images.map((image) => <div className="admin-row" key={image.id}><div><strong>{image.path.split('/').pop()}</strong><span>{image.reason} · Quedan {daysLeft(image.deletedAt)} días</span></div></div>)}
               </div>
