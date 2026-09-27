@@ -5,7 +5,7 @@ import { db } from '../../db'
 import { content, customers, expenses, imageTrash, orders, products, purchases, pushSubscriptions } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail } from './email'
-import { deleteImage, imagePathFromUrl, R2_URL_PREFIX } from './fotos'
+import { deleteImage, imagePathFromUrl } from './fotos'
 import { lineName, normalizeVariants, optionPrice, optionStock, parseOptions, resolveOption, tracksOptionStock } from './variants'
 import type { ProductVariant } from './variants'
 import { generateVapidKeys, sendPush } from './push'
@@ -413,84 +413,6 @@ async function trashImage(url: string, reason: string) {
   if (!path) return
   await db.insert(imageTrash).values({ path, url, reason })
 }
-
-// Cuántas fotos mueve cada vez que se llama esta función. Cloudflare
-// limita cuántas conexiones salientes (a GitHub, a la base de datos) puede
-// hacer UN solo pedido al Worker; con muchas fotos de una vez se pasa ese
-// límite y falla a medias. El botón del panel llama esta función varias
-// veces seguidas hasta que ya no quede nada (ver `migrarQuedan` abajo).
-const MIGRATE_BATCH = 8
-
-// Migración de una sola vez: copia a R2 las fotos de productos que
-// todavía están en GitHub (de antes de tener el almacén R2, ver
-// src/lib/fotos.ts) y actualiza la base de datos para que apunten a la
-// nueva dirección. Al final borra los archivos de GitHub ya migrados.
-// Se puede correr las veces que haga falta: si ya no queda ninguna foto
-// de GitHub, no encuentra nada que hacer.
-export const migrateGithubImagesToR2 = createServerFn({ method: 'POST' }).handler(async () => {
-  await requireAdmin()
-  if (!env.FOTOS) throw new Error('El almacén de fotos (R2) no está configurado en este Worker.')
-
-  const rows = await db.select().from(products)
-  const urlsOf = (product: (typeof rows)[number]) => [product.image, ...(product.variantImages || []).map((variant) => variant.image)]
-  const isPending = (url: string) => {
-    if (!url) return false
-    const path = imagePathFromUrl(env, url)
-    return Boolean(path) && !path!.startsWith('r2/') // no es nuestra, o ya está en R2
-  }
-
-  // Junta hasta MIGRATE_BATCH fotos pendientes, sin repetir.
-  const pending: string[] = []
-  const seen = new Set<string>()
-  for (const product of rows) {
-    for (const url of urlsOf(product)) {
-      if (!isPending(url) || seen.has(url)) continue
-      seen.add(url)
-      pending.push(url)
-      if (pending.length >= MIGRATE_BATCH) break
-    }
-    if (pending.length >= MIGRATE_BATCH) break
-  }
-
-  const urlToNew = new Map<string, string>()
-  const errors: string[] = []
-  for (const url of pending) {
-    try {
-      const path = imagePathFromUrl(env, url)!
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`GitHub respondió ${response.status}`)
-      const contentType = response.headers.get('content-type') || 'image/jpeg'
-      const key = path.split('/').pop() || `${Date.now()}-migrada.jpg`
-      await env.FOTOS!.put(key, await response.arrayBuffer(), { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } })
-      urlToNew.set(url, R2_URL_PREFIX + key)
-    } catch (caught) {
-      errors.push(`${url}: ${caught instanceof Error ? caught.message : 'error desconocido'}`)
-    }
-  }
-
-  let productosActualizados = 0
-  for (const product of rows) {
-    const newImage = urlToNew.get(product.image)
-    const newVariants = (product.variantImages || []).map((variant) =>
-      urlToNew.has(variant.image) ? { ...variant, image: urlToNew.get(variant.image)! } : variant)
-    const variantsChanged = newVariants.some((variant, i) => variant.image !== product.variantImages[i]?.image)
-    if (!newImage && !variantsChanged) continue
-    await db.update(products)
-      .set({ ...(newImage ? { image: newImage } : {}), ...(variantsChanged ? { variantImages: newVariants } : {}) })
-      .where(eq(products.id, product.id))
-    productosActualizados++
-  }
-
-  // Ya guardadas en la base: borramos el archivo viejo de GitHub. Si falla,
-  // no pasa nada: la foto ya sirve desde R2 y esto se puede reintentar.
-  for (const oldUrl of urlToNew.keys()) {
-    const path = imagePathFromUrl(env, oldUrl)
-    if (path) { try { await deleteImage(env, path) } catch { /* se reintenta corriendo la migración de nuevo */ } }
-  }
-
-  const quedan = rows.some((product) => urlsOf(product).some((url) => isPending(url) && !urlToNew.has(url)))
-  return { fotosEncontradas: urlToNew.size, productosActualizados, errores: errors, quedan }
-})
 
 // Job de limpieza: borra definitivamente lo que lleva más de 30 días en
 // papelera (productos, clientes, pedidos) y, por separado, lo que lleva

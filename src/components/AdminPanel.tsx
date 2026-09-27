@@ -11,7 +11,6 @@ import {
   recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
   saveProduct, splitPurchase, updateOrder, updateOrderStatus,
   getPushSetup, removePushSubscription, savePushSubscription, sendTestPush,
-  migrateGithubImagesToR2,
 } from '@/lib/store'
 import { fromBase64Url } from '@/lib/push'
 import {
@@ -698,41 +697,6 @@ export function AdminPanel() {
     if (createdId) setPendingRestock(createdId)
   }
 
-  // Botón de una sola vez para pasar a R2 las fotos que quedaron en GitHub
-  // de antes de tener el almacén R2. Se puede borrar de aquí (y de
-  // src/lib/store.ts) una vez que ya no encuentre nada que migrar.
-  async function handleMigrateImages() {
-    setBusy(true)
-    setError('')
-    let fotos = 0
-    let productos = 0
-    const errores: string[] = []
-    try {
-      // Cada llamada mueve un grupo chico de fotos (ver MIGRATE_BATCH en
-      // store.ts): con muchas de una vez, Cloudflare corta la conexión a
-      // medio camino. Por eso se repite sola hasta que ya no quede nada.
-      for (let vueltas = 0; vueltas < 40; vueltas++) {
-        const result = await migrateGithubImagesToR2()
-        fotos += result.fotosEncontradas
-        productos += result.productosActualizados
-        errores.push(...result.errores)
-        if (!result.quedan) break
-      }
-      setNotice(
-        fotos === 0
-          ? 'No quedaba ninguna foto en GitHub: todo está en R2.'
-          : `Listo: ${fotos} foto(s) movidas a R2, ${productos} producto(s) actualizados.${errores.length ? ` ${errores.length} con error, revisa la consola.` : ''}`,
-      )
-      if (errores.length) console.error('Errores al migrar fotos:', errores)
-      await refresh()
-    } catch (caught) {
-      setError(`${caught instanceof Error ? caught.message : 'No pudimos migrar las fotos.'} (fotos movidas antes del error: ${fotos})`)
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || !editing) return
@@ -1400,9 +1364,6 @@ export function AdminPanel() {
               </div>)}
               {!data.trash.customers.length && <p className="admin-empty">Vacío.</p>}
             </div>
-            <h3>Fotos antiguas</h3>
-            <p className="admin-hint">Fotos de productos guardadas en GitHub antes de tener el almacén R2. Muévelas a R2 para que subir fotos no vuelva a publicar toda la tienda.</p>
-            <button type="button" disabled={busy} onClick={handleMigrateImages}><Upload size={15} />Mover fotos de GitHub a R2</button>
             {data.trash.images.length > 0 && <>
               <h3>Imágenes en espera de borrado</h3>
               <p className="admin-hint">Se borran solas cuando corresponda; esta lista es solo informativa.</p>
