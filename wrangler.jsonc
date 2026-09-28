@@ -9,7 +9,7 @@
     "GITHUB_BRANCH": "main",
     "GITHUB_UPLOAD_PATH": "public/uploads",
     // Remitente de los correos de aviso de pedidos (dominio verificado en Resend).
-    "RESEND_FROM_EMAIL": "JB Tech Store <pedidos@gadrnet.com>"
+    "RESEND_FROM_EMAIL": "JB Tech Store <pedidos@jbtechstore.com>"
   },
   // Fotos nuevas de productos (ver src/lib/fotos.ts). El bucket tiene que
   // existir en la cuenta de Cloudflare antes de publicar, o el deploy falla.
