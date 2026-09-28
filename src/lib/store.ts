@@ -1112,6 +1112,13 @@ async function sendToSubscriptions(rows: Array<{ id: number; endpoint: string; p
   if (!rows.length) return { sent: 0, failed: 0, problem: '' }
   const keys = await getVapidKeys()
   const results = await Promise.all(rows.map((row) => sendPush(row, message, keys, PUSH_SUBJECT)))
+  // Si Google/Microsoft/Apple fallaron un momento (sin conexión, "muy
+  // ocupado" o error de su lado), se intenta una vez más antes de rendirse.
+  const retry = rows.map((_, index) => index).filter((index) => results[index].result === 'error' && (results[index].status === 0 || results[index].status === 429 || results[index].status >= 500))
+  if (retry.length) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await Promise.all(retry.map(async (index) => { results[index] = await sendPush(rows[index], message, keys, PUSH_SUBJECT) }))
+  }
   // Aparatos que ya no existen (app desinstalada o permiso quitado): fuera.
   const gone = rows.filter((_, index) => results[index].result === 'gone').map((row) => row.id)
   if (gone.length) await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.id, gone))

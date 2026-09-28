@@ -12,7 +12,7 @@ import {
   saveProduct, splitPurchase, updateOrder, updateOrderStatus,
   getPushSetup, removePushSubscription, savePushSubscription, sendTestPush,
 } from '@/lib/store'
-import { fromBase64Url } from '@/lib/push'
+import { fromBase64Url, toBase64Url } from '@/lib/push'
 import {
   hasOwnPrice, normalizeVariants, optionFromName, optionPrice, optionStock, parseOptions, priceRange, tracksOptionStock,
 } from '@/lib/variants'
@@ -366,6 +366,45 @@ function setAdminManifest(enabled: boolean) {
   }
 }
 
+// Si alguien toca «Apagar» en un aparato, se respeta: no se vuelve a
+// encender sola ahí hasta que toque «Activar notificaciones» otra vez.
+const PUSH_OFF_KEY = 'jb-avisos-apagados'
+const pushTurnedOff = () => { try { return localStorage.getItem(PUSH_OFF_KEY) === '1' } catch { return false } }
+const setPushTurnedOff = (off: boolean) => { try { if (off) localStorage.setItem(PUSH_OFF_KEY, '1'); else localStorage.removeItem(PUSH_OFF_KEY) } catch { /* sin almacenamiento */ } }
+
+/** Mantiene los avisos siempre encendidos en este aparato: cada vez que se
+ * abre el panel (o se vuelve a él) revisa que el aparato siga suscrito y
+ * guardado en la tienda; si se perdió (el navegador cambió la dirección, la
+ * tienda lo borró porque dejó de responder, se actualizó la app…), lo vuelve
+ * a crear solo, sin preguntar nada. Solo funciona si ya se dio el permiso. */
+let healing: Promise<void> | null = null
+let lastHeal = 0
+function ensurePushActive(force = false): Promise<void> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return Promise.resolve()
+  if (Notification.permission !== 'granted' || pushTurnedOff()) return Promise.resolve()
+  if (healing) return healing
+  if (!force && Date.now() - lastHeal < 5 * 60 * 1000) return Promise.resolve()
+  healing = (async () => {
+    const registration = await navigator.serviceWorker.register('/admin-sw.js', { scope: '/admin' })
+    registration.update().catch(() => {})
+    await navigator.serviceWorker.ready
+    const setup = await getPushSetup()
+    let subscription = await registration.pushManager.getSubscription()
+    const currentKey = subscription?.options?.applicationServerKey
+    if (subscription && currentKey && toBase64Url(currentKey) !== setup.publicKey) {
+      await subscription.unsubscribe().catch(() => false)
+      subscription = null
+    }
+    if (!subscription) subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromBase64Url(setup.publicKey) })
+    if (!setup.devices.some((device) => device.endpoint === subscription!.endpoint)) {
+      const json = subscription.toJSON()
+      await savePushSubscription({ data: { endpoint: subscription.endpoint, p256dh: json.keys?.p256dh ?? '', auth: json.keys?.auth ?? '', label: deviceLabel() } })
+    }
+    lastHeal = Date.now()
+  })().catch(() => { /* se intenta otra vez la próxima vez que se abra */ }).finally(() => { healing = null })
+  return healing
+}
+
 function isInstalledApp() {
   return typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as any).standalone === true)
 }
@@ -381,6 +420,7 @@ function AppAndNotifications() {
 
   async function load() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { setState('no-soportado'); return }
+    await ensurePushActive(true)
     const registration = await navigator.serviceWorker.register('/admin-sw.js', { scope: '/admin' })
     const setup = await getPushSetup()
     setDevices(setup.devices as unknown as PushDevice[])
@@ -410,6 +450,7 @@ function AppAndNotifications() {
   }
 
   const enable = () => run(async () => {
+    setPushTurnedOff(false)
     const permission = await Notification.requestPermission()
     if (permission !== 'granted') {
       setState(permission === 'denied' ? 'bloqueado' : 'apagado')
@@ -439,6 +480,7 @@ function AppAndNotifications() {
       await removePushSubscription({ data: subscription.endpoint })
       await subscription.unsubscribe().catch(() => false)
     }
+    setPushTurnedOff(true)
     await load()
     setMessage('Notificaciones apagadas en este aparato.')
   })
@@ -491,7 +533,9 @@ function AppAndNotifications() {
         <div>
           <strong>Avisos en este aparato</strong>
           {state === 'cargando' && <span>Revisando…</span>}
-          {state === 'no-soportado' && <span>Este navegador no puede recibir notificaciones. Abre el panel en Chrome (Android o PC) o en Edge.</span>}
+          {state === 'no-soportado' && (/iPhone|iPad/i.test(navigator.userAgent)
+            ? <span>En iPhone los avisos solo funcionan con la app en la pantalla de inicio: abre <b>jbtechstore.com/admin</b> en <b>Safari</b>, entra con la contraseña, toca <b>Compartir</b> (el cuadrito con la flecha) → <b>«Agregar a inicio»</b>. Luego abre JB Admin desde el ícono y vuelve aquí. (Necesita iPhone con iOS 16.4 o más nuevo.)</span>
+            : <span>Este navegador no puede recibir notificaciones. Abre el panel en Chrome o Edge (Android, Windows o Mac), Firefox o Samsung Internet.</span>)}
           {state === 'bloqueado' && <span className="app-warn">Las notificaciones están bloqueadas para esta página. Toca el candado junto a la dirección (o Ajustes del teléfono → Apps → JB Admin → Notificaciones) y ponlas en «Permitir»; luego vuelve aquí.</span>}
           {state === 'apagado' && <button type="button" className="primary-button" disabled={working} onClick={enable}><Bell size={16} />{working ? 'Activando…' : 'Activar notificaciones'}</button>}
           {state === 'activo' && <div className="app-actions">
@@ -574,6 +618,16 @@ export function AdminPanel() {
 
   // Solo con la sesión abierta se ofrece instalar el panel como app.
   useEffect(() => { setAdminManifest(authenticated === true) }, [authenticated])
+
+  // Con la sesión abierta, cada vez que se abre o se vuelve al panel se
+  // revisa que los avisos sigan encendidos en este aparato (ver ensurePushActive).
+  useEffect(() => {
+    if (authenticated !== true) return
+    void ensurePushActive(true)
+    const onVisible = () => { if (document.visibilityState === 'visible') void ensurePushActive() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [authenticated])
 
   // La notificación de un pedido abre /admin?tab=pedidos. Y al abrir o
   // volver a la app se quitan el punto del ícono y las notificaciones ya vistas.
