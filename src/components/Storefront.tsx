@@ -726,6 +726,8 @@ export function Storefront({ data }: Props) {
 
   const welcomeMode = copy.welcomeVoiceMode || 'desactivado'
   const welcomeAudioUrl = copy.welcomeVoiceGender === 'hombre' ? (copy.welcomeAudioUrlHombre || '') : (copy.welcomeAudioUrl || '')
+  // Métodos de pago del pie: se editan en el panel (Textos → Contacto y redes).
+  const paymentMethods = [...new Set(String(copy.paymentMethods ?? 'Efectivo, Transferencia, Tarjeta').split(/[,\n]+/).map((item) => item.trim()).filter(Boolean))].slice(0, 12)
   const welcomeVoiceGenderTexto = copy.welcomeVoiceGenderTexto === 'mujer' ? 'mujer' : 'hombre'
   useWelcomeVoice(welcomeMode === 'texto' ? (copy.welcomeVoiceText || '') : '', welcomeVoiceGenderTexto)
   useWelcomeAudio(welcomeMode === 'audio' ? welcomeAudioUrl : '')
@@ -1064,10 +1066,10 @@ export function Storefront({ data }: Props) {
           <p className="footer-location">{copy.location}</p>
         </div>
         <div className="reveal delay-2"><span>Horario</span><p>{copy.schedule}</p></div>
-        <div className="reveal delay-3">
+        {paymentMethods.length > 0 && <div className="reveal delay-3">
           <span>Métodos de pago</span>
-          <div className="payment-tags"><span>Efectivo</span><span>Transferencia</span><span>Tarjeta</span></div>
-        </div>
+          <div className="payment-tags">{paymentMethods.map((method) => <span key={method}>{method}</span>)}</div>
+        </div>}
       </div>
       <div className="footer-bottom reveal">
         <a className="gadr-credit" href="https://gadrnet.com" target="_blank" rel="noopener noreferrer">

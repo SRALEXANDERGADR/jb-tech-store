@@ -80,6 +80,8 @@ const defaultContent: Record<string, string> = {
   instagram: '@jb_tech.store',
   facebook: 'JB TECH STORE',
   schedule: 'Lunes a sábado · 9:00 AM - 6:00 PM',
+  // Se muestran en el pie de la tienda (separados por coma). Vacío = no se muestra la sección.
+  paymentMethods: 'Efectivo, Transferencia, Tarjeta',
   developerCredit: 'Diseño y desarrollo de la tienda',
   cartTitle: 'Tu carrito',
   checkoutTitle: 'Completa tu pedido',

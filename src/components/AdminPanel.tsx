@@ -272,6 +272,7 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
     { key: 'instagram', label: 'Usuario de Instagram' },
     { key: 'facebook', label: 'Página de Facebook' },
     { key: 'schedule', label: 'Horario' },
+    { key: 'paymentMethods', label: 'Métodos de pago (sepáralos con coma, ej.: Efectivo, Transferencia, Tarjeta). Déjalo vacío para no mostrarlos.' },
     { key: 'notificationEmail', label: 'Correos para avisos de pedidos (opcional; si son varios, sepáralos con coma)' },
   ] },
   { title: 'Navegación y otros textos', fields: [
