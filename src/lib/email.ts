@@ -149,5 +149,19 @@ async function sendResendEmail(env: Env, to: string, subject: string, html: stri
 /** Envía el correo de aviso de pedido. Nunca lanza: un fallo aquí no debe
  * interrumpir el registro del pedido del cliente. */
 export async function sendOrderNotificationEmail(env: Env, to: string, order: EmailOrder): Promise<void> {
-  await sendResendEmail(env, to, `Nuevo pedido: ${order.orderNumber} — ${order.customerName}`, buildOrderEmailHtml(order))
+  const html = buildOrderEmailHtml(order)
+  const subject = `Nuevo pedido: ${order.orderNumber} — ${order.customerName}`
+  // Un correo aparte para cada dirección, así nadie ve los correos de los demás.
+  await Promise.all(parseEmailList(to).map((address) => sendResendEmail(env, address, subject, html)))
+}
+
+/** "a@x.com, b@y.com" (también con punto y coma, espacios o saltos de línea)
+ * → lista de correos válidos, sin repetir. Máximo 10. */
+export function parseEmailList(value: string): string[] {
+  const seen = new Set<string>()
+  for (const part of String(value || '').split(/[\s,;]+/)) {
+    const email = part.trim().toLowerCase()
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) seen.add(email)
+  }
+  return [...seen].slice(0, 10)
 }

@@ -272,7 +272,7 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
     { key: 'instagram', label: 'Usuario de Instagram' },
     { key: 'facebook', label: 'Página de Facebook' },
     { key: 'schedule', label: 'Horario' },
-    { key: 'notificationEmail', label: 'Correo para avisos de pedidos (opcional)' },
+    { key: 'notificationEmail', label: 'Correos para avisos de pedidos (opcional; si son varios, sepáralos con coma)' },
   ] },
   { title: 'Navegación y otros textos', fields: [
     { key: 'navShop', label: 'Menú: Tienda' },

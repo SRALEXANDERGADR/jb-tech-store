@@ -4,7 +4,7 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'driz
 import { db } from '../../db'
 import { content, customers, expenses, imageTrash, orders, products, purchases, pushSubscriptions } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
-import { sendOrderNotificationEmail } from './email'
+import { sendOrderNotificationEmail, parseEmailList } from './email'
 import { deleteImage, imagePathFromUrl } from './fotos'
 import { lineName, normalizeVariants, optionPrice, optionStock, parseOptions, resolveOption, tracksOptionStock } from './variants'
 import type { ProductVariant } from './variants'
@@ -889,7 +889,8 @@ export const saveContent = createServerFn({ method: 'POST' }).inputValidator((da
   // ~40 viajes a Neon uno tras otro: por eso "Guardar" tardaba tanto).
   const rows = Object.entries(data || {})
     .filter(([key]) => typeof key === 'string' && key.length > 0 && key.length <= 64)
-    .map(([key, value]) => ({ key, value: String(value ?? '') }))
+    // Los correos de avisos se guardan limpios: "a@x.com, b@y.com".
+    .map(([key, value]) => ({ key, value: key === 'notificationEmail' ? parseEmailList(String(value ?? '')).join(', ') : String(value ?? '') }))
   if (rows.length) await db.insert(content).values(rows).onConflictDoUpdate({ target: content.key, set: { value: sql`excluded.value` } })
   return true
 })
