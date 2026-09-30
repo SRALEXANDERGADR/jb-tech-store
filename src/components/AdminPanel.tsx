@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ChangeEvent, ComponentType, FormEvent, ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
-  AlertTriangle, Bell, BellOff, Check, ChevronLeft, Download, Layers, Smartphone, LayoutDashboard, ListOrdered, LogOut, Package,
+  AlertTriangle, Bell, BellOff, Check, ChevronLeft, Download, Handshake, Layers, Smartphone, LayoutDashboard, ListOrdered, LogOut, Package,
   Pencil, Plus, RotateCcw, Search, Share2, ShoppingBag, ShoppingCart, SlidersHorizontal, Trash2, Upload, Users, Wallet, X,
 } from 'lucide-react'
 import {
@@ -59,7 +59,7 @@ const CATALOG_FILTERS: Array<{ id: CatalogFilter; label: string }> = [
   { id: 'sincosto', label: 'Sin costo' },
   { id: 'ocultos', label: 'Ocultos' },
 ]
-type Tab = 'resumen' | 'finanzas' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
+type Tab = 'resumen' | 'finanzas' | 'socios' | 'catalogo' | 'pedidos' | 'clientes' | 'contenido' | 'papelera'
 
 const ORDER_STATUSES = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado', 'Cancelado']
 const PAYMENT_STATUSES = ['Pendiente', 'Pagado']
@@ -649,7 +649,7 @@ export function AdminPanel() {
   // volver a la app se quitan el punto del ícono y las notificaciones ya vistas.
   useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get('tab')
-    if (wanted && ['resumen', 'finanzas', 'catalogo', 'pedidos', 'clientes', 'contenido', 'papelera'].includes(wanted)) setTab(wanted as Tab)
+    if (wanted && ['resumen', 'finanzas', 'socios', 'catalogo', 'pedidos', 'clientes', 'contenido', 'papelera'].includes(wanted)) setTab(wanted as Tab)
     const clearBadge = () => {
       if (document.visibilityState !== 'visible') return
       try { (navigator as any).clearAppBadge?.()?.catch?.(() => {}) } catch { /* sin soporte */ }
@@ -1122,6 +1122,7 @@ export function AdminPanel() {
     { id: 'catalogo', label: 'Productos', icon: Package },
     { id: 'pedidos', label: `Pedidos${pendingOrders ? ` (${pendingOrders})` : ''}`, icon: ListOrdered },
     { id: 'finanzas', label: 'Finanzas', icon: Wallet },
+    { id: 'socios', label: 'Socios', icon: Handshake },
     { id: 'clientes', label: 'Clientes', icon: Users },
     { id: 'contenido', label: 'Textos', icon: Pencil },
     { id: 'papelera', label: `Papelera${trashTotal ? ` (${trashTotal})` : ''}`, icon: Trash2 },
@@ -1139,7 +1140,7 @@ export function AdminPanel() {
   const lotsOfProduct = lotsProduct ? [...(lotsByProduct.get(lotsProduct.id) ?? [])].sort(byFifo) : []
   const editingSum = editing ? editing.options.reduce((sum, option) => sum + Math.max(0, Math.round(Number(option.stock || 0))), 0) : 0
   const editingOriginal = editing?.id ? productById.get(editing.id) : undefined
-  const modalOpen = Boolean(editing || editingCustomer || editingOrder || editingPurchase || editingExpense || saleDraft || splitDraft || lotsProduct)
+  const modalOpen = Boolean(editing || editingCustomer || editingOrder || editingPurchase || editingExpense || editingPartner || saleDraft || splitDraft || lotsProduct)
 
   return (
     <div className="admin-shell">
@@ -1219,46 +1220,7 @@ export function AdminPanel() {
               </p>
             )}
 
-            <div className="admin-section-head partners-head">
-              <h3 className="finance-group-title">Socios</h3>
-              <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingPartner({ name: '', capital: '', percent: '50', notes: '' }) }}><Plus size={15} />Agregar socio</button>
-            </div>
-            {!activePartners.length && <p className="admin-hint"><Users size={14} />Si alguien pone dinero para comprar mercancía, agrégalo aquí. En «Reponer» sale su dinero como otra opción, y cuando se vende esa mercancía la ganancia se divide sola entre tú y él.</p>}
-            {activePartners.map((stat) => (
-              <div className="partner-card" key={stat.partner.id}>
-                <div className="partner-card-head">
-                  <div><strong>{stat.partner.name}</strong><span>Invirtió {money(stat.partner.capital)} · le toca el {stat.partner.percent}% de la ganancia</span></div>
-                  <div className="partner-card-actions">
-                    <button type="button" className="icon-button" title="Editar socio" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><Pencil size={15} /></button>
-                    <button type="button" className="icon-button" title="Quitar socio" disabled={busy} onClick={() => confirmRemovePartner(stat.partner)}><Trash2 size={15} /></button>
-                  </div>
-                </div>
-                <div className="admin-cards">
-                  <div className="admin-card"><span>Su dinero ahora</span><strong>{money(stat.caja)}</strong></div>
-                  <div className="admin-card"><span>En mercancía</span><strong>{money(stat.mercancia)}</strong></div>
-                  <div className="admin-card"><span>Ganancia de su mercancía</span><strong>{money(stat.ganancia)}</strong></div>
-                  <div className="admin-card"><span>Le toca a {stat.partner.name} ({stat.partner.percent}%)</span><strong>{money(stat.parteSocio)}</strong></div>
-                  <div className="admin-card"><span>Te toca a ti ({100 - stat.partner.percent}%)</span><strong>{money(stat.parteDuena)}</strong></div>
-                  <div className="admin-card"><span>Ya se le entregó</span><strong>{money(stat.pagado)}</strong></div>
-                </div>
-                <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}). Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
-                <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingExpense({ type: 'socio', description: `Pago a ${stat.partner.name}`, amount: '', partnerId: String(stat.partner.id) }) }}><Wallet size={15} />Registrar pago a {stat.partner.name}</button>
-              </div>
-            ))}
-            {partnerStats.some((stat) => !stat.partner.active) && (
-              <Collapsible title="Socios quitados">
-                {partnerStats.filter((stat) => !stat.partner.active).map((stat) => (
-                  <div className="admin-row" key={stat.partner.id}>
-                    <div><strong>{stat.partner.name}</strong><span>Ganancia {money(stat.ganancia)} · le tocó {money(stat.parteSocio)} · se le entregó {money(stat.pagado)}</span></div>
-                    <strong>{money(stat.caja)}</strong>
-                    <div className="admin-row-actions">
-                      <button type="button" title="Volver a agregar" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><RotateCcw size={15} /></button>
-                    </div>
-                  </div>
-                ))}
-              </Collapsible>
-            )}
-
+            {activePartners.length > 0 && <p className="admin-hint"><Handshake size={14} />Tienes {activePartners.length === 1 ? '1 socio' : `${activePartners.length} socios`}: sus cuentas están en <button type="button" className="link-button" onClick={() => goTab('socios')}>Socios</button>.</p>}
             <Collapsible title="Ver todas las cuentas (cómo se calcula)">
               <h3 className="finance-group-title">Ventas</h3>
               <div className="admin-cards">
@@ -1333,6 +1295,54 @@ export function AdminPanel() {
               </div>
               <button className="primary-button" disabled={busy} onClick={handleSaveFinanceSettings}><Check size={16} />{busy ? 'Guardando…' : 'Guardar configuración'}</button>
             </Collapsible>
+          </section>
+        )}
+
+        {tab === 'socios' && (
+          <section>
+            <div className="admin-section-head">
+              <h2>Socios</h2>
+              <button type="button" className="primary-button" onClick={() => { setError(''); setEditingPartner({ name: '', capital: '', percent: '50', notes: '' }) }}><Plus size={16} />Agregar socio</button>
+            </div>
+            {!activePartners.length && <p className="admin-hint"><Handshake size={14} />Si alguien pone dinero para comprar mercancía, agrégalo aquí. En «Reponer» sale su dinero como otra opción, y cuando se vende esa mercancía la ganancia se divide sola entre tú y él.</p>}
+            {activePartners.map((stat) => (
+              <div className="partner-card" key={stat.partner.id}>
+                <div className="partner-card-head">
+                  <div><strong>{stat.partner.name}</strong><span>Invirtió {money(stat.partner.capital)} · le toca el {stat.partner.percent}% de la ganancia</span></div>
+                  <div className="partner-card-actions">
+                    <button type="button" className="icon-button" title="Editar socio" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><Pencil size={15} /></button>
+                    <button type="button" className="icon-button" title="Quitar socio" disabled={busy} onClick={() => confirmRemovePartner(stat.partner)}><Trash2 size={15} /></button>
+                  </div>
+                </div>
+                <div className="admin-cards">
+                  <div className="admin-card"><span>Su dinero ahora</span><strong>{money(stat.caja)}</strong></div>
+                  <div className="admin-card"><span>En mercancía</span><strong>{money(stat.mercancia)}</strong></div>
+                  <div className="admin-card"><span>Ganancia de su mercancía</span><strong>{money(stat.ganancia)}</strong></div>
+                  <div className="admin-card"><span>Le toca a {stat.partner.name} ({stat.partner.percent}%)</span><strong>{money(stat.parteSocio)}</strong></div>
+                  <div className="admin-card"><span>Te toca a ti ({100 - stat.partner.percent}%)</span><strong>{money(stat.parteDuena)}</strong></div>
+                  <div className="admin-card"><span>Ya se le entregó</span><strong>{money(stat.pagado)}</strong></div>
+                </div>
+                <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}). Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
+                <div className="partner-card-buttons">
+                  <button type="button" className="ghost-button" onClick={() => { openPurchase(); setEditingPurchase((current) => current && { ...current, fund: `socio:${stat.partner.id}` }) }}><ShoppingBag size={15} />Comprar con su dinero</button>
+                  <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingExpense({ type: 'socio', description: `Pago a ${stat.partner.name}`, amount: '', partnerId: String(stat.partner.id) }) }}><Wallet size={15} />Registrar pago</button>
+                </div>
+              </div>
+            ))}
+            {partnerStats.some((stat) => !stat.partner.active) && (
+              <Collapsible title="Socios quitados">
+                {partnerStats.filter((stat) => !stat.partner.active).map((stat) => (
+                  <div className="admin-row" key={stat.partner.id}>
+                    <div><strong>{stat.partner.name}</strong><span>Ganancia {money(stat.ganancia)} · le tocó {money(stat.parteSocio)} · se le entregó {money(stat.pagado)}</span></div>
+                    <strong>{money(stat.caja)}</strong>
+                    <div className="admin-row-actions">
+                      <button type="button" title="Volver a agregar" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><RotateCcw size={15} /></button>
+                    </div>
+                  </div>
+                ))}
+              </Collapsible>
+            )}
+
           </section>
         )}
 

@@ -65,7 +65,7 @@ Hay dos cuentas. **La que funciona es la VIEJA.** La nueva (de Yeilin) está en 
    - El manifest de la app (`public/admin.webmanifest`) tiene `scope: "/"` (y `start_url`/`id` en `/admin`): así, si dentro de la app se abre la tienda (al cerrar sesión o tocar "Ver la tienda"), no sale la barra blanca con la dirección y la X. El dueño lo quiere así: la tienda se abre DENTRO de la app, sin barra. Efecto aceptado: en el aparato donde esté instalada JB Admin, los enlaces de la tienda de ese mismo dominio pueden abrirse dentro de la app.
    - Cada pedido nuevo también manda un correo con Resend, si en "Textos" hay un correo para avisos (`notificationEmail`).
    - Si falla la activación, el panel muestra el código de error que respondió Google.
-6. **Panel admin simplificado:** menú en cuadritos en el teléfono (Inicio, Productos, Pedidos, Finanzas, Clientes, Textos, Papelera). Finanzas tiene 5 números grandes y el detalle en secciones que se abren. Crear un producto nuevo abre "Reponer" enseguida, porque un producto nuevo siempre empieza en 0.
+6. **Panel admin simplificado:** menú en cuadritos en el teléfono (Inicio, Productos, Pedidos, Finanzas, Socios, Clientes, Textos, Papelera). Finanzas tiene 5 números grandes y el detalle en secciones que se abren. Crear un producto nuevo abre "Reponer" enseguida, porque un producto nuevo siempre empieza en 0.
 7. **Portada para compartir:** `public/og-cover.png` y las etiquetas `og:` en `src/routes/__root.tsx` apuntan a jbtechstore.com.
 8. **"Dinero para reinvertir" como dinero propio de la dueña** (ver Finanzas abajo).
 
@@ -93,7 +93,7 @@ Cómo está hecho:
 
 ## Socios (personas que ponen dinero para comprar mercancía)
 Lo pidió Yeilin: "Maria capital 5,000, ventas 10,000: 5 son el capital y los otros 5 son ganancia, eso se divide entre dos". Su dinero no se mezcla con el del negocio.
-- Tabla `partners` (`name`, `capital` = lo que invirtió, `percent` = % de la ganancia para el socio, 50 por defecto, `active`). Se crean, editan y quitan en Finanzas → "Socios". Quitar un socio con historial solo lo oculta (`active = false`).
+- Tabla `partners` (`name`, `capital` = lo que invirtió, `percent` = % de la ganancia para el socio, 50 por defecto, `active`). Tienen su propio cuadrito en el menú del panel: "Socios" (ahí se crean, editan y quitan; también "Comprar con su dinero" y "Registrar pago"). Quitar un socio con historial solo lo oculta (`active = false`).
 - En "Reponer", cada socio activo sale como otra opción de dinero: el lote queda con `purchases.fund = 'socio'` y `purchases.partner_id`.
 - Cada línea de pedido guarda `partnerShares: [{ partnerId, qty, cost }]` (como `reinvQty`/`reinvCost`, pero por socio; `cost` es el TOTAL). En `store.ts` todas las cajas se manejan juntas con `Share` (`'reinversion'` o `'socio:<id>'`): `consumeFifoCost`, `returnToFifo`, `shrinkPool`, `withShares`, `lineShares`. Cancelar/reactivar/editar un pedido devuelve cada unidad a su caja.
 - Pagos al socio: `expenses.type = 'socio'` con `expenses.partner_id` ("Registrar pago a …").
