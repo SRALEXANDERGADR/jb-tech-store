@@ -768,6 +768,17 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .status-cancelado { background: rgba(239,68,68,0.16); color: #fca5a5; }
 .status-negocio { background: rgba(59,130,246,0.16); color: var(--blue-400); }
 .status-personal { background: rgba(168,85,247,0.16); color: #c084fc; }
+.status-socio { background: rgba(16,185,129,0.16); color: #34d399; }
+.partners-head { margin: 22px 0 8px; }
+.partners-head .finance-group-title { margin: 0; }
+.partner-card { background: var(--navy-800); border: 1px solid rgba(255,255,255,.06); border-radius: var(--radius-md); padding: 14px; margin: 10px 0; display: grid; gap: 10px; }
+.partner-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.partner-card-head strong { display: block; font-size: 1.05rem; }
+.partner-card-head span { color: var(--slate-400, #94a3b8); font-size: .85rem; }
+.partner-card-actions { display: flex; gap: 6px; }
+.partner-card .admin-cards { margin: 0; }
+.partner-card .admin-hint { margin: 0; }
+.partner-card > .ghost-button, .partners-head .ghost-button { margin: 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 
 .admin-order { background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 14px; }
 .admin-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }

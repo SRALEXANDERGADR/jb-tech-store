@@ -87,8 +87,10 @@ export const orders = pgTable('orders', {
   // tienen: en ese caso se saca del nombre ("Producto — opción").
   // `reinvQty` = cuántas de esas unidades salieron de lotes comprados con el
   // "Dinero para reinvertir", y `reinvCost` lo que costaron EN TOTAL (no por
-  // unidad). Sin estos campos = todo salió del dinero del negocio.
-  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }>>(),
+  // unidad). `partnerShares` = lo mismo pero por cada socio (lotes pagados
+  // con el dinero de un socio). Sin estos campos = todo salió del dinero
+  // del negocio.
+  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }>>(),
   // Descuento manual aplicado por el admin al negociar con el cliente
   // (en centavos). 0 = sin descuento. `total` ya sale con el descuento
   // restado — se recalcula en el servidor cada vez que se edita el pedido.
@@ -147,8 +149,10 @@ export const purchases = pgTable('purchases', {
   option: text('option').notNull().default(''),
   // Con qué dinero se pagó este lote: 'capital' (dinero del negocio) o
   // 'reinversion' (el dinero para reinvertir, que es de la dueña). Al
-  // vender, lo que costó vuelve a esa misma caja.
+  // vender, lo que costó vuelve a esa misma caja. 'socio' = se pagó con el
+  // dinero de un socio (`partnerId`).
   fund: text('fund').notNull().default('capital'),
+  partnerId: integer('partner_id'),
   quantity: integer('quantity').notNull(),
   unitCost: integer('unit_cost').notNull(), // centavos
   totalCost: integer('total_cost').notNull(), // centavos = quantity * unitCost
@@ -169,9 +173,27 @@ export const purchases = pgTable('purchases', {
 // ───────────────────────────────────────────────────────────────────────
 export const expenses = pgTable('expenses', {
   id: serial('id').primaryKey(),
-  type: text('type').notNull().default('negocio'), // 'negocio' | 'personal'
+  type: text('type').notNull().default('negocio'), // 'negocio' | 'personal' | 'socio' (pago a un socio)
+  partnerId: integer('partner_id'), // solo en los pagos a un socio
   description: text('description').notNull(),
   amount: integer('amount').notNull(), // centavos
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+})
+
+// ───────────────────────────────────────────────────────────────────────
+// SOCIOS — personas que ponen dinero para comprar mercancía. Lo que se
+// compra con su dinero queda marcado en el lote (`purchases.partnerId`).
+// Al venderlo, lo que costó vuelve a la caja del socio y la ganancia se
+// divide: `percent`% para el socio y el resto para la dueña. Su dinero
+// nunca se mezcla con el del negocio.
+// ───────────────────────────────────────────────────────────────────────
+export const partners = pgTable('partners', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  capital: integer('capital').notNull().default(0), // centavos: lo que invirtió
+  percent: integer('percent').notNull().default(50), // % de la ganancia que le toca
+  notes: text('notes').notNull().default(''),
+  active: boolean('active').notNull().default(true), // false = quitado (se guarda su historial)
   createdAt: timestamp('created_at').notNull().defaultNow(),
 })
 

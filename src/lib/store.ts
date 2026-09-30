@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { env } from 'cloudflare:workers'
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { content, customers, expenses, imageTrash, orders, products, purchases, pushSubscriptions } from '../../db/schema'
+import { content, customers, expenses, imageTrash, orders, partners, products, purchases, pushSubscriptions } from '../../db/schema'
 import { createSession, clearSession, verifyPassword, verifySession } from './auth'
 import { sendOrderNotificationEmail, parseEmailList } from './email'
 import { deleteImage, imagePathFromUrl } from './fotos'
@@ -17,20 +17,59 @@ const TRASH_DAYS = 30
 const TRASH_MS = TRASH_DAYS * 24 * 60 * 60 * 1000
 
 export type CartLine = { productId: number; name: string; price: number; quantity: number; image: string; option?: string }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }
+type PartnerShare = { partnerId: number; qty: number; cost: number }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: PartnerShare[] }
 type ProductRow = typeof products.$inferSelect
+type PurchaseRow = typeof purchases.$inferSelect
 
-// Con qué dinero se paga una compra (ver `purchases.fund`).
-const FUNDS = ['capital', 'reinversion'] as const
+// Con qué dinero se paga una compra (ver `purchases.fund`). 'socio' = el
+// dinero de un socio (`purchases.partnerId`).
+const FUNDS = ['capital', 'reinversion', 'socio'] as const
 type Fund = (typeof FUNDS)[number]
 
-/** Lo que costaron unas unidades vendidas: el total, y cuánto de eso (y
- * cuántas unidades) salió de lotes pagados con el dinero para reinvertir. */
-type TakenCost = { cost: number; reinv: number; reinvQty: number }
+// ───────────────────────────────────────────────────────────────────────
+// CAJAS — cada unidad vendida salió de un lote pagado con una "caja": el
+// dinero del negocio ('capital'), el dinero para reinvertir ('reinversion')
+// o el dinero de un socio ('socio:<id>'). Una línea de pedido guarda cuántas
+// unidades (y cuánto costaron EN TOTAL) salieron de cada caja que no sea la
+// del negocio; el resto es del negocio.
+// ───────────────────────────────────────────────────────────────────────
+type Share = { key: string; qty: number; cost: number }
 
-/** Línea de pedido con su parte de reinversión (solo se guarda si la hay). */
-function withReinv(item: Omit<OrderItem, 'reinvCost' | 'reinvQty'>, reinvCost: number, reinvQty: number): OrderItem {
-  return reinvQty > 0 ? { ...item, reinvCost, reinvQty } : item
+/** Lo que costaron unas unidades vendidas: el total y lo que salió de cada
+ * caja que no es la del negocio. */
+type TakenCost = { cost: number; shares: Share[] }
+
+function fundKey(batch: Pick<PurchaseRow, 'fund' | 'partnerId'>) {
+  if (batch.fund === 'reinversion') return 'reinversion'
+  if (batch.fund === 'socio' && batch.partnerId) return `socio:${batch.partnerId}`
+  return 'capital'
+}
+
+function addShare(shares: Share[], key: string, qty: number, cost: number) {
+  if (key === 'capital' || qty <= 0) return
+  const found = shares.find((share) => share.key === key)
+  if (found) { found.qty += qty; found.cost += cost } else shares.push({ key, qty, cost })
+}
+
+/** Las cajas de una línea de pedido ya guardada. */
+function lineShares(item: OrderItem): Share[] {
+  const shares: Share[] = []
+  addShare(shares, 'reinversion', Math.min(item.quantity, Math.max(0, item.reinvQty ?? 0)), Math.max(0, item.reinvCost ?? 0))
+  for (const part of item.partnerShares ?? []) addShare(shares, `socio:${part.partnerId}`, Math.max(0, part.qty), Math.max(0, part.cost))
+  return shares
+}
+
+/** Línea de pedido con sus cajas (solo se guarda lo que haya). */
+function withShares(item: OrderItem, shares: Share[]): OrderItem {
+  const { reinvCost: _reinvCost, reinvQty: _reinvQty, partnerShares: _partnerShares, ...rest } = item
+  const next: OrderItem = { ...rest }
+  const reinv = shares.find((share) => share.key === 'reinversion')
+  if (reinv && reinv.qty > 0) { next.reinvCost = reinv.cost; next.reinvQty = reinv.qty }
+  const partnerShares = shares.filter((share) => share.key.startsWith('socio:') && share.qty > 0)
+    .map((share) => ({ partnerId: Number(share.key.slice(6)), qty: share.qty, cost: share.cost }))
+  if (partnerShares.length) next.partnerShares = partnerShares
+  return next
 }
 
 export const CATEGORIES = ['Teléfonos', 'Laptops', 'Accesorios', 'Cargadores y Cables', 'Covers y Protectores', 'Audífonos y Bocinas', 'Relojes Inteligentes', 'Gaming', 'Otros']
@@ -136,14 +175,17 @@ function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const result = await db.execute(sql`select
-        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund'))))
-        + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name = 'push_subscriptions') as n`)
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id')))
+        + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name in ('push_subscriptions', 'partners')) as n`)
       const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 4) return
+      if (Number(rows[0]?.n ?? 0) >= 7) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "fund" text NOT NULL DEFAULT 'capital'`)
       await db.execute(sql`CREATE TABLE IF NOT EXISTS "push_subscriptions" ("id" serial PRIMARY KEY, "endpoint" text NOT NULL UNIQUE, "p256dh" text NOT NULL, "auth" text NOT NULL, "label" text NOT NULL DEFAULT '', "created_at" timestamp NOT NULL DEFAULT now())`)
+      await db.execute(sql`CREATE TABLE IF NOT EXISTS "partners" ("id" serial PRIMARY KEY, "name" text NOT NULL, "capital" integer NOT NULL DEFAULT 0, "percent" integer NOT NULL DEFAULT 50, "notes" text NOT NULL DEFAULT '', "active" boolean NOT NULL DEFAULT true, "created_at" timestamp NOT NULL DEFAULT now())`)
+      await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
+      await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
       throw error
@@ -192,12 +234,12 @@ async function fallbackCost(product: ProductRow, option: string): Promise<number
 
 // Consume del lote más viejo primero (FIFO) para vender `quantity`
 // unidades y devuelve el costo total (centavos) de esa cantidad, y cuánto
-// de eso salió de lotes pagados con el dinero para reinvertir. Si no hay
+// de eso salió de cada caja (reinversión o socios). Si no hay
 // suficiente cantidad registrada en lotes, usa fallbackCost para lo que
 // falte (como dinero del negocio), para no bloquear la venta.
 async function consumeFifoCost(product: ProductRow, option: string, quantity: number): Promise<TakenCost> {
   let remaining = quantity
-  const taken: TakenCost = { cost: 0, reinv: 0, reinvQty: 0 }
+  const taken: TakenCost = { cost: 0, shares: [] }
   const batches = await db.select().from(purchases)
     .where(and(lotsFor(product, option), gt(purchases.remainingQuantity, 0)))
     .orderBy(purchases.createdAt, purchases.id)
@@ -205,10 +247,7 @@ async function consumeFifoCost(product: ProductRow, option: string, quantity: nu
     if (remaining <= 0) break
     const take = Math.min(remaining, batch.remainingQuantity)
     taken.cost += take * batch.unitCost
-    if (batch.fund === 'reinversion') {
-      taken.reinv += take * batch.unitCost
-      taken.reinvQty += take
-    }
+    addShare(taken.shares, fundKey(batch), take, take * batch.unitCost)
     remaining -= take
     await db.update(purchases).set({ remainingQuantity: batch.remainingQuantity - take }).where(eq(purchases.id, batch.id))
   }
@@ -222,10 +261,10 @@ async function consumeFifoCost(product: ProductRow, option: string, quantity: nu
 /** Devuelve unidades a los lotes de los que salieron (pedido cancelado o
  * editado a menos unidades): primero al lote más reciente que ya se había
  * empezado a vender, luego a los anteriores — el reverso de consumeFifoCost.
- * Las `reinvQty` unidades que salieron de lotes del dinero para reinvertir
- * vuelven a lotes de esa misma caja, y las demás a lotes del negocio; lo
- * que no quepa ahí va a cualquier lote con espacio. */
-async function returnToFifo(product: ProductRow, option: string, quantity: number, reinvQty = 0) {
+ * Las unidades de cada caja (`shares`: reinversión o un socio) vuelven a
+ * lotes de esa misma caja, y las demás a lotes del negocio; lo que no quepa
+ * ahí va a cualquier lote con espacio. */
+async function returnToFifo(product: ProductRow, option: string, quantity: number, shares: Share[] = []) {
   const batches = await db.select().from(purchases)
     .where(and(lotsFor(product, option), lt(purchases.remainingQuantity, purchases.quantity)))
     .orderBy(desc(purchases.createdAt), desc(purchases.id))
@@ -242,9 +281,14 @@ async function returnToFifo(product: ProductRow, option: string, quantity: numbe
     }
     return remaining
   }
-  const reinv = Math.min(quantity, Math.max(0, reinvQty))
-  const left = fill(batches.filter((batch) => batch.fund === 'reinversion'), reinv)
-    + fill(batches.filter((batch) => batch.fund !== 'reinversion'), quantity - reinv)
+  let left = 0
+  let pending = quantity
+  for (const share of shares) {
+    const amount = Math.min(pending, Math.max(0, share.qty))
+    pending -= amount
+    left += fill(batches.filter((batch) => fundKey(batch) === share.key), amount)
+  }
+  left += fill(batches.filter((batch) => fundKey(batch) === 'capital'), pending)
   fill(batches, left)
   for (const batch of batches) {
     const add = put.get(batch.id)
@@ -272,10 +316,10 @@ async function changeStock(productId: number, option: string, delta: number) {
 }
 
 /** Saca `quantity` unidades del inventario (FIFO) y devuelve su costo
- * total (y la parte del dinero para reinvertir). Falla con un mensaje
+ * total (y lo que salió de cada caja). Falla con un mensaje
  * claro si no hay suficientes. */
 async function takeStock(productId: number, option: string, quantity: number, label: string): Promise<TakenCost> {
-  if (quantity <= 0) return { cost: 0, reinv: 0, reinvQty: 0 }
+  if (quantity <= 0) return { cost: 0, shares: [] }
   const product = await loadProduct(productId)
   if (!product) throw new Error(`El producto ${label} ya no existe.`)
   if (tracksOptionStock(product) && !option) throw new Error(`Elige la opción (color/diseño) de ${product.name}.`)
@@ -286,13 +330,13 @@ async function takeStock(productId: number, option: string, quantity: number, la
   return taken
 }
 
-/** Devuelve `quantity` unidades al inventario y a sus lotes (`reinvQty` de
- * ellas habían salido de lotes del dinero para reinvertir). */
-async function returnStock(productId: number, option: string, quantity: number, reinvQty = 0) {
+/** Devuelve `quantity` unidades al inventario y a sus lotes (`shares` dice
+ * cuántas de ellas habían salido de cada caja que no es la del negocio). */
+async function returnStock(productId: number, option: string, quantity: number, shares: Share[] = []) {
   if (quantity <= 0) return
   const product = await loadProduct(productId)
   if (!product) return // el producto se eliminó definitivamente: no hay a dónde devolver
-  await returnToFifo(product, option, quantity, reinvQty)
+  await returnToFifo(product, option, quantity, shares)
   await changeStock(productId, option, quantity)
   await syncCurrentCost(productId)
 }
@@ -336,23 +380,32 @@ function itemOption(rows: ProductRow[], item: { id: number; name: string; option
 }
 
 /** Unidades de un mismo producto+opción dentro de un pedido, con lo que
- * costaron en total y la parte que salió del dinero para reinvertir. */
-type CostPool = { quantity: number; cost: number; reinvCost: number; reinvQty: number }
+ * costaron en total y lo que salió de cada caja que no es la del negocio. */
+type CostPool = { quantity: number; cost: number; shares: Share[] }
 
 /** Deja el grupo en `quantity` unidades (menos que antes): las que salen se
- * reparten entre las dos cajas en la misma proporción que tenía, y el costo
- * de cada caja baja en proporción. Devuelve también cuántas de las que
- * salen eran del dinero para reinvertir (para devolverlas a esos lotes). */
-function shrinkPool(pool: CostPool, quantity: number): { kept: CostPool; removedReinvQty: number } {
-  if (quantity <= 0 || pool.quantity <= 0) return { kept: { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }, removedReinvQty: pool.reinvQty }
-  const removed = pool.quantity - quantity
-  const capitalQty = pool.quantity - pool.reinvQty
-  const removedReinvQty = Math.min(pool.reinvQty, Math.max(removed - capitalQty, Math.round((removed * pool.reinvQty) / pool.quantity)))
-  const reinvQty = pool.reinvQty - removedReinvQty
-  const reinvCost = pool.reinvQty > 0 ? Math.round((pool.reinvCost * reinvQty) / pool.reinvQty) : 0
-  const capitalKept = capitalQty - (removed - removedReinvQty)
-  const capitalCost = capitalQty > 0 ? Math.round((Math.max(0, pool.cost - pool.reinvCost) * capitalKept) / capitalQty) : 0
-  return { kept: { quantity, cost: capitalCost + reinvCost, reinvCost, reinvQty }, removedReinvQty }
+ * reparten entre las cajas en la misma proporción que tenía, y el costo de
+ * cada caja baja en proporción. Devuelve también cuántas de las que salen
+ * eran de cada caja (para devolverlas a sus lotes). */
+function shrinkPool(pool: CostPool, quantity: number): { kept: CostPool; removedShares: Share[] } {
+  const capitalQty = Math.max(0, pool.quantity - pool.shares.reduce((sum, share) => sum + share.qty, 0))
+  const capitalCost = Math.max(0, pool.cost - pool.shares.reduce((sum, share) => sum + share.cost, 0))
+  if (quantity <= 0 || pool.quantity <= 0) return { kept: { quantity: 0, cost: 0, shares: [] }, removedShares: pool.shares.map((share) => ({ ...share })) }
+  const buckets = [...pool.shares.map((share) => ({ ...share })), { key: 'capital', qty: capitalQty, cost: capitalCost }]
+  const removedParts = splitByWeight(pool.quantity - quantity, buckets.map((bucket) => bucket.qty))
+  const keptShares: Share[] = []
+  const removedShares: Share[] = []
+  let keptCost = 0
+  buckets.forEach((bucket, index) => {
+    const keptQty = bucket.qty - removedParts[index]
+    const cost = bucket.qty > 0 ? Math.round((bucket.cost * keptQty) / bucket.qty) : 0
+    keptCost += cost
+    if (bucket.key !== 'capital') {
+      if (keptQty > 0) keptShares.push({ key: bucket.key, qty: keptQty, cost })
+      if (removedParts[index] > 0) removedShares.push({ key: bucket.key, qty: removedParts[index], cost: bucket.cost - cost })
+    }
+  })
+  return { kept: { quantity, cost: keptCost, shares: keptShares }, removedShares }
 }
 
 /** Reparte `total` según los pesos, redondeando sobre lo acumulado para que
@@ -546,7 +599,7 @@ export const createOrder = createServerFn({ method: 'POST' })
     for (const line of lines) {
       const name = lineName(line.product.name, line.option)
       const taken = await takeStock(line.productId, line.option, line.quantity, name)
-      calculated.push(withReinv({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.reinv, taken.reinvQty))
+      calculated.push(withShares({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.shares))
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -581,8 +634,10 @@ export const createOrder = createServerFn({ method: 'POST' })
 // ───────────────────────────────────────────────────────────────────────
 export const getAdminData = createServerFn({ method: 'GET' }).handler(async () => {
   await requireAdmin()
+  await ensureSchema()
   await ensureSeededThrottled()
   await cleanupThrottled()
+  const partnerRows = await db.select().from(partners).orderBy(partners.createdAt, partners.id)
   const [productRows, orderRows, customerRows, contentRows, purchaseRows, expenseRows, trashedProducts, trashedOrders, trashedCustomers, trashedImages] = await Promise.all([
     db.select().from(products).where(isNull(products.deletedAt)).orderBy(desc(products.createdAt)),
     db.select().from(orders).where(isNull(orders.deletedAt)).orderBy(desc(orders.createdAt)),
@@ -602,6 +657,7 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
     content: Object.fromEntries(contentRows.filter((item) => item.key !== 'vapidKeys').map((item) => [item.key, item.value])),
     purchases: purchaseRows,
     expenses: expenseRows,
+    partners: partnerRows,
     trash: { products: trashedProducts, orders: trashedOrders, customers: trashedCustomers, images: trashedImages },
   }
 })
@@ -699,7 +755,7 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
     // hay stock suficiente; si no, avisa y no cambia nada.
     if (!wasCancelled && willBeCancelled) {
       const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
-      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity, item.reinvQty ?? 0)
+      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity, lineShares(item))
     } else if (wasCancelled && !willBeCancelled) {
       const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
       if (order.items.some((item) => !rows.some((row) => row.id === item.id))) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
@@ -711,8 +767,7 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
         const taken = await takeStock(item.id, option, item.quantity, item.name)
         // El costo (y de qué dinero salió) se vuelve a calcular: las unidades
         // pueden salir ahora de otros lotes que cuando se hizo el pedido.
-        const { reinvCost: _reinvCost, reinvQty: _reinvQty, ...rest } = item
-        next.push(withReinv({ ...rest, option, cost: Math.round(taken.cost / Math.max(1, item.quantity)) }, taken.reinv, taken.reinvQty))
+        next.push(withShares({ ...item, option, cost: Math.round(taken.cost / Math.max(1, item.quantity)) }, taken.shares))
       }
       items = next
     }
@@ -738,23 +793,22 @@ export const updateOrder = createServerFn({ method: 'POST' })
       return { ...clean, option: itemOption(rows, clean) }
     })
     // Se cuenta por producto Y por opción: cuántas unidades tenía el pedido,
-    // lo que costaron en total y la parte del dinero para reinvertir.
+    // lo que costaron en total y lo que salió de cada caja.
     const keyOf = (item: { id: number; option?: string }) => `${item.id}::${item.option || ''}`
     const before = new Map<string, CostPool>()
     for (const item of previous.items) {
       const key = keyOf({ id: item.id, option: itemOption(rows, item) })
-      const pool = before.get(key) ?? { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }
+      const pool = before.get(key) ?? { quantity: 0, cost: 0, shares: [] }
       pool.quantity += item.quantity
       pool.cost += item.cost * item.quantity
-      pool.reinvCost += Math.max(0, item.reinvCost ?? 0)
-      pool.reinvQty += Math.min(item.quantity, Math.max(0, item.reinvQty ?? 0))
+      for (const share of lineShares(item)) addShare(pool.shares, share.key, share.qty, share.cost)
       before.set(key, pool)
     }
     const after = new Map<string, number>()
     for (const item of items) after.set(keyOf(item), (after.get(keyOf(item)) ?? 0) + item.quantity)
     const changes = [...new Set([...before.keys(), ...after.keys()])].map((key) => {
       const [id, ...rest] = key.split('::')
-      const pool = before.get(key) ?? { quantity: 0, cost: 0, reinvCost: 0, reinvQty: 0 }
+      const pool = before.get(key) ?? { quantity: 0, cost: 0, shares: [] }
       return { key, productId: Number(id), option: rest.join('::'), pool, extra: (after.get(key) ?? 0) - pool.quantity }
     })
     // Si cambió la cantidad de algún producto (o se quitó uno), el
@@ -768,21 +822,20 @@ export const updateOrder = createServerFn({ method: 'POST' })
     for (const change of changes) {
       if (change.extra >= 0) continue
       // Menos unidades: todo baja en proporción.
-      const { kept, removedReinvQty } = shrinkPool(change.pool, change.pool.quantity + change.extra)
-      if (active) await returnStock(change.productId, change.option, -change.extra, removedReinvQty)
+      const { kept, removedShares } = shrinkPool(change.pool, change.pool.quantity + change.extra)
+      if (active) await returnStock(change.productId, change.option, -change.extra, removedShares)
       pools.set(change.key, kept)
     }
     for (const change of changes) {
       if (change.extra < 0) continue
-      const pool = { ...change.pool }
+      const pool = { ...change.pool, shares: change.pool.shares.map((share) => ({ ...share })) }
       if (change.extra > 0) {
         if (active && increases.includes(change)) {
           // Más unidades: se suma lo que costaron las que se sacaron ahora.
           const target = items.find((item) => keyOf(item) === change.key)
           const taken = await takeStock(change.productId, change.option, change.extra, target?.name ?? 'un producto')
           pool.cost += taken.cost
-          pool.reinvCost += taken.reinv
-          pool.reinvQty += taken.reinvQty
+          for (const share of taken.shares) addShare(pool.shares, share.key, share.qty, share.cost)
         } else {
           // Pedido cancelado (no saca del inventario) o producto que ya no
           // existe: las unidades nuevas toman el costo promedio que ya tenía.
@@ -798,13 +851,25 @@ export const updateOrder = createServerFn({ method: 'POST' })
       const positions = items.flatMap((item, index) => (keyOf(item) === key ? [index] : []))
       if (!positions.length) continue
       const quantities = positions.map((position) => items[position].quantity)
-      const reinvQtys = splitByWeight(pool.reinvQty, quantities)
-      const reinvCosts = splitByWeight(pool.reinvCost, reinvQtys)
-      const capitalWeights = quantities.map((quantity, index) => quantity - reinvQtys[index])
-      const capitalCosts = splitByWeight(Math.max(0, pool.cost - pool.reinvCost), capitalWeights.some((weight) => weight > 0) ? capitalWeights : quantities)
+      // Cada caja se reparte entre las líneas según el espacio que les queda
+      // (así ninguna línea lleva más unidades de las que tiene).
+      const room = [...quantities]
+      const lineShareList: Share[][] = positions.map(() => [])
+      const lineCost = positions.map(() => 0)
+      for (const share of pool.shares) {
+        const qtys = splitByWeight(share.qty, room)
+        const costs = splitByWeight(share.cost, qtys)
+        qtys.forEach((qty, index) => {
+          room[index] -= qty
+          lineCost[index] += costs[index]
+          addShare(lineShareList[index], share.key, qty, costs[index])
+        })
+      }
+      const capitalCost = Math.max(0, pool.cost - pool.shares.reduce((sum, share) => sum + share.cost, 0))
+      const capitalCosts = splitByWeight(capitalCost, room.some((weight) => weight > 0) ? room : quantities)
       positions.forEach((position, index) => {
         const line = items[position]
-        items[position] = withReinv({ ...line, cost: Math.round((capitalCosts[index] + reinvCosts[index]) / line.quantity) }, reinvCosts[index], reinvQtys[index])
+        items[position] = withShares({ ...line, cost: Math.round((capitalCosts[index] + lineCost[index]) / line.quantity) }, lineShareList[index])
       })
     }
     const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
@@ -867,7 +932,7 @@ export const recordManualSale = createServerFn({ method: 'POST' })
       const row = rows.find((item) => item.id === line.productId)!
       const name = lineName(row.name, line.option)
       const taken = await takeStock(row.id, line.option, line.quantity, name)
-      items.push(withReinv({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.reinv, taken.reinvQty))
+      items.push(withShares({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.shares))
     }
     const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customerName = String(data.customerName || '').trim().slice(0, 80) || 'Venta en tienda'
@@ -940,12 +1005,22 @@ export const purgeCustomer = createServerFn({ method: 'POST' }).inputValidator((
 // Registra una compra/reposición de inventario: suma el stock del
 // producto y crea un lote nuevo (las ventas consumen primero el lote más
 // viejo — FIFO). Si se registró mal, se puede borrar (ver deletePurchase).
-// `fund` dice con qué dinero se pagó: el del negocio o el de reinvertir.
+// `fund` dice con qué dinero se pagó: el del negocio, el de reinvertir o el
+// de un socio (`partnerId`).
 export const recordPurchase = createServerFn({ method: 'POST' })
-  .inputValidator((data: { productId: number; notes: string; fund?: Fund; lines: Array<{ option: string; quantity: number; unitCost: number }> }) => data)
+  .inputValidator((data: { productId: number; notes: string; fund?: Fund; partnerId?: number; lines: Array<{ option: string; quantity: number; unitCost: number }> }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
+    await ensureSchema()
     const fund: Fund = FUNDS.includes(data.fund as Fund) ? (data.fund as Fund) : 'capital'
+    let partnerId: number | null = null
+    let partnerName = ''
+    if (fund === 'socio') {
+      const [partner] = await db.select().from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
+      if (!partner || !partner.active) throw new Error('Elige el socio con cuyo dinero se hizo la compra.')
+      partnerId = partner.id
+      partnerName = partner.name
+    }
     const product = await loadProduct(Number(data.productId))
     if (!product) throw new Error('Ese producto ya no existe.')
     const tracking = tracksOptionStock(product)
@@ -978,10 +1053,10 @@ export const recordPurchase = createServerFn({ method: 'POST' })
       await db.update(products).set({ stock: product.stock + quantity, cost: newCost }).where(eq(products.id, product.id))
     }
     await db.insert(purchases).values(lines.map((line) => ({
-      productId: product.id, productName: product.name, option: line.option, fund, quantity: line.quantity, unitCost: line.unitCost,
+      productId: product.id, productName: product.name, option: line.option, fund, partnerId, quantity: line.quantity, unitCost: line.unitCost,
       totalCost: line.quantity * line.unitCost, remainingQuantity: line.quantity, notes,
     })))
-    return { lots: lines.length, total: lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0), fund }
+    return { lots: lines.length, total: lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0), fund, partnerName }
   })
 
 // Elimina una compra registrada por error (ej. una de prueba). Solo
@@ -989,7 +1064,7 @@ export const recordPurchase = createServerFn({ method: 'POST' })
 // (remainingQuantity) — lo que ya se vendió de ese lote se queda como
 // está, porque esas ventas ya guardaron su propio costo y no se tocan.
 // Al bajar su totalCost, ese dinero vuelve solo en Finanzas a la caja con
-// que se pagó (Dinero del negocio o Dinero para reinvertir).
+// que se pagó (Dinero del negocio, Dinero para reinvertir o el de un socio).
 export const deletePurchase = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
   const [purchase] = await db.select().from(purchases).where(eq(purchases.id, data)).limit(1)
@@ -1050,7 +1125,7 @@ export const splitPurchase = createServerFn({ method: 'POST' })
     const total = [...byOption.values()].reduce((sum, quantity) => sum + quantity, 0)
     if (total !== purchase.remainingQuantity) throw new Error(`Tienes que repartir exactamente ${purchase.remainingQuantity} (llevas ${total}).`)
     await db.insert(purchases).values([...byOption.entries()].map(([option, quantity]) => ({
-      productId: purchase.productId, productName: purchase.productName, option, fund: purchase.fund, quantity, unitCost: purchase.unitCost,
+      productId: purchase.productId, productName: purchase.productName, option, fund: purchase.fund, partnerId: purchase.partnerId, quantity, unitCost: purchase.unitCost,
       totalCost: quantity * purchase.unitCost, remainingQuantity: quantity, notes: purchase.notes, createdAt: purchase.createdAt,
     })))
     const sold = purchase.quantity - purchase.remainingQuantity
@@ -1063,18 +1138,66 @@ export const splitPurchase = createServerFn({ method: 'POST' })
     return true
   })
 
-// Registra un gasto del negocio o un gasto/retiro personal. `type`
-// 'negocio' sale del Capital disponible (no toca la ganancia a repartir);
-// 'personal' se resta de lo que ya le corresponde a Yeilin, sin tocar la
-// ganancia del negocio.
-export const recordExpense = createServerFn({ method: 'POST' })
-  .inputValidator((data: { type: 'negocio' | 'personal'; description: string; amount: number }) => data)
+// ───────────────────────────────────────────────────────────────────────
+// ADMIN — socios (personas que ponen dinero para comprar mercancía)
+// ───────────────────────────────────────────────────────────────────────
+export const savePartner = createServerFn({ method: 'POST' })
+  .inputValidator((data: { id?: number; name: string; capital: number; percent: number; notes?: string }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
+    await ensureSchema()
+    const name = String(data.name || '').trim().slice(0, 80)
+    if (!name) throw new Error('Escribe el nombre del socio.')
+    const capital = Math.round(Number(data.capital))
+    if (!Number.isFinite(capital) || capital < 0) throw new Error('Lo que invirtió no puede ser negativo.')
+    const percent = Math.round(Number(data.percent))
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error('El porcentaje debe ser de 0 a 100.')
+    const values = { name, capital, percent, notes: String(data.notes || '').trim().slice(0, 300) }
+    if (data.id) {
+      await db.update(partners).set({ ...values, active: true }).where(eq(partners.id, Number(data.id)))
+      return Number(data.id)
+    }
+    const [created] = await db.insert(partners).values(values).returning({ id: partners.id })
+    return created.id
+  })
+
+// Quitar un socio: si nunca se compró nada con su dinero ni se le pagó, se
+// borra. Si ya tiene historial, solo se oculta (deja de salir en «Reponer»)
+// para que las cuentas de lo que ya se vendió no cambien.
+export const removePartner = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
+  await requireAdmin()
+  await ensureSchema()
+  const id = Number(data)
+  const [lot] = await db.select({ id: purchases.id }).from(purchases).where(eq(purchases.partnerId, id)).limit(1)
+  const [paid] = await db.select({ id: expenses.id }).from(expenses).where(eq(expenses.partnerId, id)).limit(1)
+  if (lot || paid) {
+    await db.update(partners).set({ active: false }).where(eq(partners.id, id))
+    return { archived: true }
+  }
+  await db.delete(partners).where(eq(partners.id, id))
+  return { archived: false }
+})
+
+// Registra un gasto del negocio, un gasto/retiro personal o un pago a un
+// socio. `type` 'negocio' sale del Capital disponible (no toca la ganancia a
+// repartir); 'personal' se resta de lo que ya le corresponde a Yeilin, sin
+// tocar la ganancia del negocio; 'socio' sale de la caja de ese socio
+// (`partnerId`): es dinero que se le entregó.
+export const recordExpense = createServerFn({ method: 'POST' })
+  .inputValidator((data: { type: 'negocio' | 'personal' | 'socio'; description: string; amount: number; partnerId?: number }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    await ensureSchema()
     const description = data.description.trim()
     const amount = Math.max(0, Math.round(data.amount))
     if (!description) throw new Error('Escribe una descripción del gasto.')
     if (amount <= 0) throw new Error('El monto debe ser mayor a 0.')
+    if (data.type === 'socio') {
+      const [partner] = await db.select({ id: partners.id }).from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
+      if (!partner) throw new Error('Ese socio ya no existe.')
+      await db.insert(expenses).values({ type: 'socio', description, amount, partnerId: partner.id })
+      return true
+    }
     await db.insert(expenses).values({ type: data.type === 'personal' ? 'personal' : 'negocio', description, amount })
     return true
   })

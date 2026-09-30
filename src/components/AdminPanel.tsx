@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import {
   CATEGORIES, checkSession, deleteCustomer, deleteExpense, deleteOrder, deletePurchase, deleteProduct,
-  getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense,
+  getAdminData, login, logout, purgeCustomer, purgeOrder, purgeProduct, recordExpense, removePartner, savePartner,
   recordManualSale, recordPurchase, restoreCustomer, restoreOrder, restoreProduct, saveContent, saveCustomer,
   saveProduct, splitPurchase, updateOrder, updateOrderStatus,
   getPushSetup, removePushSubscription, savePushSubscription, sendTestPush,
@@ -23,14 +23,18 @@ const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-di
 const shortDate = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short' }).format(new Date(value))
 
 type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: ProductVariant[]; optionStock: boolean; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
-type Fund = 'capital' | 'reinversion'
-type Purchase = { id: number; productId: number; productName: string; option: string; fund: Fund; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
-type Expense = { id: number; type: 'negocio' | 'personal'; description: string; amount: number; createdAt: string }
-type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
+type Fund = 'capital' | 'reinversion' | 'socio'
+/** Caja elegida al reponer: 'capital', 'reinversion' o 'socio:<id>'. */
+type FundChoice = string
+type Purchase = { id: number; productId: number; productName: string; option: string; fund: Fund; partnerId: number | null; quantity: number; unitCost: number; totalCost: number; remainingQuantity: number; notes: string; createdAt: string }
+type ExpenseType = 'negocio' | 'personal' | 'socio'
+type Expense = { id: number; type: ExpenseType; description: string; amount: number; partnerId: number | null; createdAt: string }
+type Partner = { id: number; name: string; capital: number; percent: number; notes: string; active: boolean; createdAt: string }
+type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; content: Record<string, string>; purchases: Purchase[]; expenses: Expense[]; partners: Partner[]; trash: { products: Product[]; orders: Order[]; customers: Customer[]; images: ImageTrashRow[] } }
 
 /** Una opción (color/diseño/modelo) mientras se edita el producto. `key`
  * no cambia aunque se le cambie el nombre, y `originalName` es el nombre
@@ -39,8 +43,9 @@ type OptionDraft = { key: string; name: string; originalName: string; image: str
 type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; optionStock: boolean; options: OptionDraft[]; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseLine = { option: string; quantity: string; unitCost: string }
-type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string; fund: Fund }
-type ExpenseDraft = { type: 'negocio' | 'personal'; description: string; amount: string }
+type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string; fund: FundChoice }
+type ExpenseDraft = { type: ExpenseType; description: string; amount: string; partnerId: string }
+type PartnerDraft = { id?: number; name: string; capital: string; percent: string; notes: string }
 type SaleLine = { productId: string; option: string; quantity: string; price: string }
 type SaleDraft = { customerName: string; phone: string; notes: string; paymentStatus: string; lines: SaleLine[] }
 type SplitDraft = { purchase: Purchase; parts: Record<string, string> }
@@ -89,10 +94,17 @@ function purchaseDraftFor(product?: Product): PurchaseDraft {
   return { productId: product ? String(product.id) : '', notes: '', lines, sameCost: '', fund: 'capital' }
 }
 
-const FUND_LABEL: Record<Fund, string> = { capital: 'Dinero del negocio', reinversion: 'Dinero para reinvertir' }
+const FUND_LABEL: Record<'capital' | 'reinversion', string> = { capital: 'Dinero del negocio', reinversion: 'Dinero para reinvertir' }
 
 function emptyExpenseDraft(): ExpenseDraft {
-  return { type: 'negocio', description: '', amount: '' }
+  return { type: 'negocio', description: '', amount: '', partnerId: '' }
+}
+
+/** Caja de un lote: 'capital', 'reinversion' o 'socio:<id>'. */
+function lotFund(lot: Pick<Purchase, 'fund' | 'partnerId'>): FundChoice {
+  if (lot.fund === 'reinversion') return 'reinversion'
+  if (lot.fund === 'socio' && lot.partnerId) return `socio:${lot.partnerId}`
+  return 'capital'
 }
 
 /** Primera opción que se puede vender (si lleva cantidad por opción, la
@@ -137,7 +149,7 @@ function nextLotFor(lots: Purchase[], product: Product, option: string): Purchas
 
 const STATUS_LABEL: Record<LotStatus, string> = { ahora: 'Se vende ahora', espera: 'En espera', vendido: 'Vendido completo' }
 
-function LotRow({ lot, status, showProduct, general, busy, onDelete, onSplit }: { lot: Purchase; status: LotStatus; showProduct?: boolean; general?: boolean; busy: boolean; onDelete: () => void; onSplit?: () => void }) {
+function LotRow({ lot, status, showProduct, general, partnerName, busy, onDelete, onSplit }: { lot: Purchase; status: LotStatus; showProduct?: boolean; general?: boolean; partnerName?: string; busy: boolean; onDelete: () => void; onSplit?: () => void }) {
   const sold = lot.quantity - lot.remainingQuantity
   const percent = lot.quantity > 0 ? Math.round((sold / lot.quantity) * 100) : 0
   return (
@@ -147,6 +159,7 @@ function LotRow({ lot, status, showProduct, general, busy, onDelete, onSplit }: 
           {showProduct && <strong>{lot.productName}</strong>}
           {lot.option ? <span className="lot-option">{lot.option}</span> : general ? <span className="lot-option lot-option-general">Sin opción</span> : null}
           {lot.fund === 'reinversion' && <span className="lot-option lot-fund" title="Se pagó con el dinero para reinvertir">Reinversión</span>}
+          {lot.fund === 'socio' && <span className="lot-option lot-fund" title="Se pagó con el dinero de un socio">Socio: {partnerName || 'sin nombre'}</span>}
         </div>
         <span className={`lot-badge lot-badge-${status}`}>{STATUS_LABEL[status]}</span>
       </div>
@@ -585,6 +598,7 @@ export function AdminPanel() {
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({})
   const [editingPurchase, setEditingPurchase] = useState<PurchaseDraft | null>(null)
   const [editingExpense, setEditingExpense] = useState<ExpenseDraft | null>(null)
+  const [editingPartner, setEditingPartner] = useState<PartnerDraft | null>(null)
   const [editingOrder, setEditingOrder] = useState<{ id: number; customerName: string; email: string; phone: string; address: string; notes: string; items: OrderItem[]; discount: number } | null>(null)
   const [financeSettings, setFinanceSettings] = useState({ capitalInicial: '0', reinvestPercent: '70' })
   const [browserVoices, setBrowserVoices] = useState<string[] | null>(null)
@@ -602,7 +616,8 @@ export function AdminPanel() {
 
   async function refresh() {
     const adminData = await getAdminData()
-    setData(adminData as unknown as AdminData)
+    const loaded = adminData as unknown as AdminData
+    setData({ ...loaded, partners: loaded.partners ?? [] })
     setContentDraft(adminData.content)
     setFinanceSettings({
       capitalInicial: String(Number(adminData.content.capitalInicial || 0) / 100),
@@ -818,21 +833,23 @@ export function AdminPanel() {
     if (lines.some((line) => line.unitCost === '' || Number(line.unitCost) < 0)) { setError('Pon el costo por unidad de cada compra.'); return }
     const draft = editingPurchase
     await withBusy(async () => {
+      const partnerId = draft.fund.startsWith('socio:') ? Number(draft.fund.slice(6)) : undefined
       const result = await recordPurchase({ data: {
         productId: Number(draft.productId),
         notes: draft.notes,
-        fund: draft.fund,
+        fund: partnerId ? 'socio' : draft.fund === 'reinversion' ? 'reinversion' : 'capital',
+        partnerId,
         lines: lines.map((line) => ({ option: line.option, quantity: Math.round(Number(line.quantity)), unitCost: cents(line.unitCost) })),
       } })
       setEditingPurchase(null)
-      const paidWith = result.fund === 'reinversion' ? ' con el dinero para reinvertir' : ''
+      const paidWith = result.fund === 'reinversion' ? ' con el dinero para reinvertir' : result.fund === 'socio' ? ` con el dinero de ${result.partnerName}` : ''
       setNotice(result.lots > 1 ? `Listo: se registraron ${result.lots} compras (una por opción) por ${money(result.total)}${paidWith}.` : `Listo: compra registrada por ${money(result.total)}${paidWith}.`)
     })
   }
 
   function confirmDeletePurchase(purchase: Purchase) {
     const sold = purchase.quantity - purchase.remainingQuantity
-    const pocket = FUND_LABEL[purchase.fund === 'reinversion' ? 'reinversion' : 'capital']
+    const pocket = fundName(lotFund(purchase)).replace(/^Dinero/, 'dinero')
     const message = sold > 0
       ? `De este lote ya se vendieron ${sold}. No se puede borrar entero sin descuadrar las Finanzas, así que se quitarán solo las ${purchase.remainingQuantity} que quedan: salen del inventario y ${money(purchase.remainingQuantity * purchase.unitCost)} vuelven al ${pocket}. ¿Continuar?`
       : `¿Eliminar esta compra? Se restan ${purchase.remainingQuantity} unidades del inventario y ${money(purchase.totalCost)} vuelven al ${pocket}.`
@@ -926,12 +943,34 @@ export function AdminPanel() {
     event.preventDefault()
     if (!editingExpense) return
     await withBusy(async () => {
+      if (editingExpense.type === 'socio' && !editingExpense.partnerId) throw new Error('Elige a cuál socio le pagaste.')
       await recordExpense({ data: {
         type: editingExpense.type,
         description: editingExpense.description,
         amount: cents(editingExpense.amount),
+        partnerId: editingExpense.type === 'socio' ? Number(editingExpense.partnerId) : undefined,
       } })
       setEditingExpense(null)
+    })
+  }
+
+  // ─── Socios ───
+  async function handleSavePartner(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!editingPartner) return
+    const draft = editingPartner
+    await withBusy(async () => {
+      await savePartner({ data: { id: draft.id, name: draft.name, capital: cents(draft.capital), percent: Math.round(Number(draft.percent || 0)), notes: draft.notes } })
+      setEditingPartner(null)
+      setNotice(draft.id ? `Listo: se guardaron los cambios de ${draft.name.trim()}.` : `Listo: ${draft.name.trim()} ya sale en «Reponer» como otra opción de dinero.`)
+    })
+  }
+
+  function confirmRemovePartner(partner: Partner) {
+    if (!window.confirm(`¿Quitar a ${partner.name}?\n\nSi ya se compró algo con su dinero, sus cuentas se guardan y solo deja de salir en «Reponer».`)) return
+    withBusy(async () => {
+      const result = await removePartner({ data: partner.id })
+      setNotice(result.archived ? `${partner.name} ya no sale en «Reponer». Sus cuentas se guardan abajo en «Socios quitados».` : `${partner.name} se quitó.`)
     })
   }
 
@@ -963,6 +1002,7 @@ export function AdminPanel() {
   if (!data) return <div className="admin-loading">Cargando panel…</div>
 
   const productById = new Map(data.products.map((product) => [product.id, product]))
+  const partnerNames = new Map(data.partners.map((partner) => [partner.id, partner.name]))
   const lotsByProduct = new Map<number, Purchase[]>()
   for (const purchase of data.purchases) lotsByProduct.set(purchase.productId, [...(lotsByProduct.get(purchase.productId) ?? []), purchase])
   const statusById = new Map<number, LotStatus>()
@@ -970,7 +1010,7 @@ export function AdminPanel() {
 
   const filteredProducts = data.products.filter((product) => `${product.name} ${product.options}`.toLowerCase().includes(query.toLowerCase()))
   const filteredOrders = data.orders.filter((order) => `${order.orderNumber} ${order.customerName} ${order.phone}`.toLowerCase().includes(query.toLowerCase()))
-  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.option} ${purchase.notes} ${purchase.fund === 'reinversion' ? 'reinversión reinversion' : ''}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
+  const filteredPurchases = data.purchases.filter((purchase) => `${purchase.productName} ${purchase.option} ${purchase.notes} ${purchase.fund === 'reinversion' ? 'reinversión reinversion' : ''} ${purchase.fund === 'socio' ? `socio ${partnerNames.get(purchase.partnerId ?? 0) ?? ''}` : ''}`.toLowerCase().includes(purchaseQuery.toLowerCase()))
   const filteredCustomers = data.customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.email}`.toLowerCase().includes(query.toLowerCase()))
   const pendingOrders = data.orders.filter((order) => order.status === 'Pendiente').length
   const outOfStock = data.products.filter((product) => product.stock === 0).length
@@ -1006,24 +1046,52 @@ export function AdminPanel() {
   // ganó es 100% suyo (no se reparte). `reinvQty`/`reinvCost` de cada línea
   // dicen cuántas unidades salieron de esos lotes y cuánto costaron. El
   // descuento del pedido se reparte en proporción al precio de cada línea.
+  // Lo mismo con cada socio (`partnerShares`): lo que costó vuelve a la caja
+  // del socio y la ganancia se divide: su % para él y el resto para la dueña
+  // (directo a «Puedes retirar», sin pasar por el negocio).
   let ventasReinvExacto = 0
   let recuperadoReinv = 0
+  const ventasSocioExacto = new Map<number, number>()
+  const recuperadoSocio = new Map<number, number>()
   for (const order of paidOrders) {
     const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const share = subtotal > 0 ? order.total / subtotal : 0
     for (const item of order.items) {
       const reinvQty = Math.min(item.quantity, Math.max(0, item.reinvQty ?? 0))
-      if (!reinvQty) continue
-      ventasReinvExacto += item.price * reinvQty * share
-      recuperadoReinv += item.reinvCost ?? 0
+      if (reinvQty) {
+        ventasReinvExacto += item.price * reinvQty * share
+        recuperadoReinv += item.reinvCost ?? 0
+      }
+      for (const part of item.partnerShares ?? []) {
+        if (!(part.qty > 0)) continue
+        ventasSocioExacto.set(part.partnerId, (ventasSocioExacto.get(part.partnerId) ?? 0) + item.price * part.qty * share)
+        recuperadoSocio.set(part.partnerId, (recuperadoSocio.get(part.partnerId) ?? 0) + (part.cost ?? 0))
+      }
     }
   }
   const ventasReinv = Math.round(ventasReinvExacto)
   const gananciaPropia = ventasReinv - recuperadoReinv
-  const gananciaNegocio = gananciaBruta - gananciaPropia
+  const partnerStats = data.partners.map((partner) => {
+    const ventas = Math.round(ventasSocioExacto.get(partner.id) ?? 0)
+    const recuperado = recuperadoSocio.get(partner.id) ?? 0
+    const ganancia = ventas - recuperado
+    const parteSocio = Math.round((ganancia * partner.percent) / 100)
+    const lots = data.purchases.filter((purchase) => purchase.fund === 'socio' && purchase.partnerId === partner.id)
+    const gastado = lots.reduce((sum, purchase) => sum + purchase.totalCost, 0)
+    const mercancia = lots.reduce((sum, purchase) => sum + purchase.remainingQuantity * purchase.unitCost, 0)
+    const pagado = data.expenses.filter((expense) => expense.type === 'socio' && expense.partnerId === partner.id).reduce((sum, expense) => sum + expense.amount, 0)
+    // Caja del socio: lo que invirtió − lo que se compró con eso + lo que
+    // vuelve al vender + su parte de la ganancia − lo que ya se le entregó.
+    const caja = partner.capital - gastado + recuperado + parteSocio - pagado
+    return { partner, ventas, recuperado, ganancia, parteSocio, parteDuena: ganancia - parteSocio, gastado, mercancia, pagado, caja, used: lots.length > 0 || pagado > 0 }
+  })
+  const gananciaSocios = partnerStats.reduce((sum, stat) => sum + stat.ganancia, 0)
+  const parteDuenaSocios = partnerStats.reduce((sum, stat) => sum + stat.parteDuena, 0)
+  const recuperadoSocios = partnerStats.reduce((sum, stat) => sum + stat.recuperado, 0)
+  const gananciaNegocio = gananciaBruta - gananciaPropia - gananciaSocios
   const gastadoReinv = data.purchases.filter((purchase) => purchase.fund === 'reinversion').reduce((sum, purchase) => sum + purchase.totalCost, 0)
-  const gastadoCapital = data.purchases.filter((purchase) => purchase.fund !== 'reinversion').reduce((sum, purchase) => sum + purchase.totalCost, 0)
-  const recuperadoCapital = costoVentas - recuperadoReinv
+  const gastadoCapital = data.purchases.filter((purchase) => lotFund(purchase) === 'capital').reduce((sum, purchase) => sum + purchase.totalCost, 0)
+  const recuperadoCapital = costoVentas - recuperadoReinv - recuperadoSocios
   const capitalInicial = Number(data.content.capitalInicial || 0)
   // Los gastos del NEGOCIO salen del capital del negocio (el dinero con
   // que se compra mercancía), no de la ganancia: así la ganancia que se
@@ -1037,7 +1105,16 @@ export function AdminPanel() {
   const reinversion = Math.round((gananciaNegocio * reinvestPercent) / 100)
   const paraTi = gananciaNegocio - reinversion
   const dineroReinvertir = reinversion - gastadoReinv + recuperadoReinv
-  const disponibleRetirar = paraTi + gananciaPropia - gastosPersonales
+  const disponibleRetirar = paraTi + gananciaPropia + parteDuenaSocios - gastosPersonales
+  const activePartners = partnerStats.filter((stat) => stat.partner.active)
+  const fundBalance = (fund: FundChoice) => fund === 'reinversion' ? dineroReinvertir
+    : fund.startsWith('socio:') ? partnerStats.find((stat) => `socio:${stat.partner.id}` === fund)?.caja ?? 0
+    : capitalDisponible
+  function fundName(fund: FundChoice) {
+    if (fund === 'reinversion') return FUND_LABEL.reinversion
+    if (fund.startsWith('socio:')) return `Dinero de ${partnerNames.get(Number(fund.slice(6))) ?? 'un socio'}`
+    return FUND_LABEL.capital
+  }
   const inventoryValue = data.purchases.reduce((sum, purchase) => sum + purchase.remainingQuantity * purchase.unitCost, 0)
 
   const TABS: Array<{ id: Tab; label: string; icon: ComponentType<{ size?: number }> }> = [
@@ -1131,7 +1208,7 @@ export function AdminPanel() {
             <div className="money-hero">
               <div className="money-card"><span>Dinero del negocio</span><strong>{money(capitalDisponible)}</strong><small>Lo que hay para comprar mercancía</small></div>
               <div className="money-card"><span>Dinero para reinvertir</span><strong>{money(dineroReinvertir)}</strong><small>Tu {reinvestPercent}% de la ganancia, para comprar más mercancía</small></div>
-              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia{gananciaPropia !== 0 ? ', más lo que ganaste con el dinero para reinvertir,' : ''} menos tus gastos personales</small></div>
+              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia{gananciaPropia !== 0 ? ', más lo que ganaste con el dinero para reinvertir,' : ''}{parteDuenaSocios !== 0 ? ' más tu parte de lo que ganaron tus socios,' : ''} menos tus gastos personales</small></div>
               <div className="money-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong><small>De las ventas ya pagadas</small></div>
               <div className="money-card"><span>Mercancía en existencia</span><strong>{money(inventoryValue)}</strong><small>Lo que costó lo que todavía no se ha vendido</small></div>
             </div>
@@ -1142,6 +1219,46 @@ export function AdminPanel() {
               </p>
             )}
 
+            <div className="admin-section-head partners-head">
+              <h3 className="finance-group-title">Socios</h3>
+              <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingPartner({ name: '', capital: '', percent: '50', notes: '' }) }}><Plus size={15} />Agregar socio</button>
+            </div>
+            {!activePartners.length && <p className="admin-hint"><Users size={14} />Si alguien pone dinero para comprar mercancía, agrégalo aquí. En «Reponer» sale su dinero como otra opción, y cuando se vende esa mercancía la ganancia se divide sola entre tú y él.</p>}
+            {activePartners.map((stat) => (
+              <div className="partner-card" key={stat.partner.id}>
+                <div className="partner-card-head">
+                  <div><strong>{stat.partner.name}</strong><span>Invirtió {money(stat.partner.capital)} · le toca el {stat.partner.percent}% de la ganancia</span></div>
+                  <div className="partner-card-actions">
+                    <button type="button" className="icon-button" title="Editar socio" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><Pencil size={15} /></button>
+                    <button type="button" className="icon-button" title="Quitar socio" disabled={busy} onClick={() => confirmRemovePartner(stat.partner)}><Trash2 size={15} /></button>
+                  </div>
+                </div>
+                <div className="admin-cards">
+                  <div className="admin-card"><span>Su dinero ahora</span><strong>{money(stat.caja)}</strong></div>
+                  <div className="admin-card"><span>En mercancía</span><strong>{money(stat.mercancia)}</strong></div>
+                  <div className="admin-card"><span>Ganancia de su mercancía</span><strong>{money(stat.ganancia)}</strong></div>
+                  <div className="admin-card"><span>Le toca a {stat.partner.name} ({stat.partner.percent}%)</span><strong>{money(stat.parteSocio)}</strong></div>
+                  <div className="admin-card"><span>Te toca a ti ({100 - stat.partner.percent}%)</span><strong>{money(stat.parteDuena)}</strong></div>
+                  <div className="admin-card"><span>Ya se le entregó</span><strong>{money(stat.pagado)}</strong></div>
+                </div>
+                <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}). Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
+                <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingExpense({ type: 'socio', description: `Pago a ${stat.partner.name}`, amount: '', partnerId: String(stat.partner.id) }) }}><Wallet size={15} />Registrar pago a {stat.partner.name}</button>
+              </div>
+            ))}
+            {partnerStats.some((stat) => !stat.partner.active) && (
+              <Collapsible title="Socios quitados">
+                {partnerStats.filter((stat) => !stat.partner.active).map((stat) => (
+                  <div className="admin-row" key={stat.partner.id}>
+                    <div><strong>{stat.partner.name}</strong><span>Ganancia {money(stat.ganancia)} · le tocó {money(stat.parteSocio)} · se le entregó {money(stat.pagado)}</span></div>
+                    <strong>{money(stat.caja)}</strong>
+                    <div className="admin-row-actions">
+                      <button type="button" title="Volver a agregar" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><RotateCcw size={15} /></button>
+                    </div>
+                  </div>
+                ))}
+              </Collapsible>
+            )}
+
             <Collapsible title="Ver todas las cuentas (cómo se calcula)">
               <h3 className="finance-group-title">Ventas</h3>
               <div className="admin-cards">
@@ -1149,6 +1266,7 @@ export function AdminPanel() {
                 <div className="admin-card"><span>Costo de lo vendido</span><strong>{money(costoVentas)}</strong></div>
                 <div className="admin-card"><span>Ganancia del negocio</span><strong>{money(gananciaNegocio)}</strong></div>
                 <div className="admin-card"><span>Ganancia de tu dinero para reinvertir</span><strong>{money(gananciaPropia)}</strong></div>
+                {partnerStats.length > 0 && <div className="admin-card"><span>Ganancia de la mercancía de socios</span><strong>{money(gananciaSocios)}</strong></div>}
               </div>
               <h3 className="finance-group-title">Dinero del negocio</h3>
               <div className="admin-cards">
@@ -1167,11 +1285,13 @@ export function AdminPanel() {
               <div className="admin-cards">
                 <div className="admin-card"><span>Para ti ({100 - reinvestPercent}%)</span><strong>{money(paraTi)}</strong></div>
                 <div className="admin-card"><span>Ganancia de tu dinero para reinvertir</span><strong>{money(gananciaPropia)}</strong></div>
+                {partnerStats.length > 0 && <div className="admin-card"><span>Tu parte de la ganancia de socios</span><strong>{money(parteDuenaSocios)}</strong></div>}
                 <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
               </div>
               <p className="admin-hint">Dinero del negocio = capital inicial − lo que compraste con él + lo que vuelve al vender esa mercancía − gastos del negocio.</p>
               <p className="admin-hint">Dinero para reinvertir = el {reinvestPercent}% de la ganancia del negocio − lo que compraste con él + lo que vuelve al vender esa mercancía. Ese dinero es tuyo: lo que ganes con la mercancía que compres con él es 100% tuyo y va directo a «Puedes retirar», sin repartirse.</p>
-              <p className="admin-hint">Puedes retirar = el {100 - reinvestPercent}% de la ganancia del negocio + la ganancia de tu dinero para reinvertir − tus gastos personales. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
+              <p className="admin-hint">Puedes retirar = el {100 - reinvestPercent}% de la ganancia del negocio + la ganancia de tu dinero para reinvertir + tu parte de lo que ganó la mercancía de tus socios − tus gastos personales. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
+              {partnerStats.length > 0 && <p className="admin-hint">Mercancía de un socio: lo que costó vuelve a la caja de ese socio, y la ganancia se divide entre él y tú según su %. No pasa por el dinero del negocio ni por la reinversión.</p>}
             </Collapsible>
 
             <div className="seg-tabs">
@@ -1184,7 +1304,7 @@ export function AdminPanel() {
               <label className="search-field admin-search"><Search size={16} /><input value={purchaseQuery} onChange={(event) => { setPurchaseQuery(event.target.value); setPurchaseLimit(15) }} placeholder="Buscar compra por producto, opción o nota..." /></label>
               <div className="admin-table">
                 {filteredPurchases.slice(0, purchaseLimit).map((purchase) => (
-                  <LotRow key={purchase.id} lot={purchase} status={statusById.get(purchase.id) ?? 'espera'} showProduct general={!purchase.option && Boolean(productById.get(purchase.productId)?.optionStock)} busy={busy} onDelete={() => confirmDeletePurchase(purchase)} />
+                  <LotRow key={purchase.id} lot={purchase} partnerName={partnerNames.get(purchase.partnerId ?? 0)} status={statusById.get(purchase.id) ?? 'espera'} showProduct general={!purchase.option && Boolean(productById.get(purchase.productId)?.optionStock)} busy={busy} onDelete={() => confirmDeletePurchase(purchase)} />
                 ))}
                 {!filteredPurchases.length && <p className="admin-empty">{data.purchases.length ? 'Ninguna compra coincide.' : 'Todavía no has registrado compras.'}</p>}
                 {filteredPurchases.length > purchaseLimit && <button className="ghost-button" onClick={() => setPurchaseLimit((limit) => limit + 30)}>Ver más compras ({filteredPurchases.length - purchaseLimit} más)</button>}
@@ -1195,7 +1315,7 @@ export function AdminPanel() {
               <div className="admin-table">
                 {data.expenses.slice(0, expenseLimit).map((expense) => <div className="admin-row" key={expense.id}>
                   <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}</span></div>
-                  <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : 'Personal'}</span>
+                  <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : expense.type === 'socio' ? `Socio: ${partnerNames.get(expense.partnerId ?? 0) ?? '—'}` : 'Personal'}</span>
                   <strong>{money(expense.amount)}</strong>
                   <div className="admin-row-actions">
                     <button onClick={() => { if (window.confirm('¿Borrar este gasto?')) withBusy(() => deleteExpense({ data: expense.id })) }}><Trash2 size={15} /></button>
@@ -1304,7 +1424,7 @@ export function AdminPanel() {
                 </div>
                 <p className="admin-order-customer">{order.customerName} · {order.phone}{order.address ? ` · ${order.address}` : ''}</p>
                 <ul className="admin-order-items">{order.items.map((item, index) => <li key={`${item.id}-${index}`}>
-                  <div>{item.quantity}× {item.name}<small>Costó {money(item.cost)} cada una · ganancia {money((item.price - item.cost) * item.quantity)}{(item.reinvQty ?? 0) > 0 ? (item.reinvQty === item.quantity ? ' · con el dinero para reinvertir' : ` · ${item.reinvQty} de ${item.quantity} con el dinero para reinvertir`) : ''}</small></div>
+                  <div>{item.quantity}× {item.name}<small>Costó {money(item.cost)} cada una · ganancia {money((item.price - item.cost) * item.quantity)}{(item.reinvQty ?? 0) > 0 ? (item.reinvQty === item.quantity ? ' · con el dinero para reinvertir' : ` · ${item.reinvQty} de ${item.quantity} con el dinero para reinvertir`) : ''}{(item.partnerShares ?? []).map((part) => part.qty === item.quantity ? ` · con el dinero de ${partnerNames.get(part.partnerId) ?? 'un socio'}` : ` · ${part.qty} de ${item.quantity} con el dinero de ${partnerNames.get(part.partnerId) ?? 'un socio'}`).join('')}</small></div>
                   <span>{money(item.price * item.quantity)}</span>
                 </li>)}</ul>
                 <div className="admin-order-foot">
@@ -1606,17 +1726,18 @@ export function AdminPanel() {
           <label>Notas (opcional)<input value={editingPurchase.notes} onChange={(event) => setEditingPurchase((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. proveedor, factura..." /></label>
           <div className="fund-choice" role="radiogroup" aria-label="¿Con qué dinero?">
             <span className="fund-choice-title">¿Con qué dinero?</span>
-            {(['capital', 'reinversion'] as const).map((fund) => {
-              const balance = fund === 'capital' ? capitalDisponible : dineroReinvertir
+            {['capital', 'reinversion', ...activePartners.map((stat) => `socio:${stat.partner.id}`)].map((fund) => {
+              const balance = fundBalance(fund)
               const left = balance - purchaseTotal
               return <label key={fund} className={`switch-row fund-option ${editingPurchase.fund === fund ? 'is-active' : ''}`}>
                 <input type="radio" name="purchase-fund" value={fund} checked={editingPurchase.fund === fund} onChange={() => setEditingPurchase((current) => current && { ...current, fund })} />
-                <span><b>{FUND_LABEL[fund]}</b><small>Hay {money(balance)}{purchaseTotal > 0 && <> · después quedan <em className={left < 0 ? 'is-negative' : ''}>{money(left)}</em></>}</small></span>
+                <span><b>{fundName(fund)}</b><small>Hay {money(balance)}{purchaseTotal > 0 && <> · después quedan <em className={left < 0 ? 'is-negative' : ''}>{money(left)}</em></>}</small></span>
               </label>
             })}
           </div>
+          {editingPurchase.fund.startsWith('socio:') && <p className="admin-hint"><Users size={14} />Cuando se venda, lo que costó vuelve al {fundName(editingPurchase.fund).toLowerCase()} y la ganancia se divide entre los dos.</p>}
           {purchaseTotal > 0 && <p className="order-edit-total">Total de la compra: <strong>{money(purchaseTotal)}</strong></p>}
-          {purchaseTotal > 0 && (editingPurchase.fund === 'capital' ? capitalDisponible : dineroReinvertir) - purchaseTotal < 0 && <p className="admin-hint"><AlertTriangle size={14} />No alcanza: el {FUND_LABEL[editingPurchase.fund].toLowerCase()} quedaría en negativo. Revisa los números o elige el otro dinero.</p>}
+          {purchaseTotal > 0 && fundBalance(editingPurchase.fund) - purchaseTotal < 0 && <p className="admin-hint"><AlertTriangle size={14} />No alcanza: el {fundName(editingPurchase.fund).toLowerCase()} quedaría en negativo. Revisa los números o elige otro dinero.</p>}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button full" disabled={busy || !editingPurchase.productId}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
         </form>
@@ -1634,7 +1755,7 @@ export function AdminPanel() {
             const next = nextLotFor(lotsOfProduct, lotsProduct, '')
             return <>
               {next && <p className="next-lot">La próxima venta sale a costo <b>{money(next.unitCost)}</b> (compra del {shortDate(next.createdAt)}).</p>}
-              <div className="admin-table">{lotsOfProduct.map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>
+              <div className="admin-table">{lotsOfProduct.map((lot) => <LotRow key={lot.id} lot={lot} partnerName={partnerNames.get(lot.partnerId ?? 0)} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>
             </>
           }
           return <>
@@ -1642,7 +1763,7 @@ export function AdminPanel() {
               <div className="lots-group lots-group-warn">
                 <h3>Compras sin opción asignada</h3>
                 <p className="content-hint">Son de antes de separar por opción: cualquier opción puede salir de aquí con este costo. Tócale «Repartir» y di cuántas son de cada opción, así cada una sale con su costo real.</p>
-                <div className="admin-table">{general.filter((lot) => lot.remainingQuantity > 0).map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} general busy={busy} onDelete={() => confirmDeletePurchase(lot)} onSplit={() => { setError(''); setSplitDraft({ purchase: lot, parts: {} }) }} />)}</div>
+                <div className="admin-table">{general.filter((lot) => lot.remainingQuantity > 0).map((lot) => <LotRow key={lot.id} lot={lot} partnerName={partnerNames.get(lot.partnerId ?? 0)} status={statuses.get(lot.id) ?? 'espera'} general busy={busy} onDelete={() => confirmDeletePurchase(lot)} onSplit={() => { setError(''); setSplitDraft({ purchase: lot, parts: {} }) }} />)}</div>
               </div>
             )}
             {parseOptions(lotsProduct.options).map((option) => {
@@ -1651,7 +1772,7 @@ export function AdminPanel() {
               return <div className="lots-group" key={option}>
                 <h3>{option} <small>hay {optionStock(lotsProduct, option)} · precio {money(optionPrice(lotsProduct, option))}</small></h3>
                 {next ? <p className="next-lot">Próxima venta sale a costo <b>{money(next.unitCost)}</b>{next.option ? '' : ' (de una compra sin opción)'}.</p> : <p className="content-hint">Sin compras con unidades.</p>}
-                {lots.length > 0 && <div className="admin-table">{lots.map((lot) => <LotRow key={lot.id} lot={lot} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>}
+                {lots.length > 0 && <div className="admin-table">{lots.map((lot) => <LotRow key={lot.id} lot={lot} partnerName={partnerNames.get(lot.partnerId ?? 0)} status={statuses.get(lot.id) ?? 'espera'} busy={busy} onDelete={() => confirmDeletePurchase(lot)} />)}</div>}
               </div>
             })}
           </>
@@ -1750,15 +1871,39 @@ export function AdminPanel() {
         <h2>Registrar gasto</h2>
         <form className="product-form" onSubmit={handleSaveExpense}>
           <label>Tipo
-            <select value={editingExpense.type} onChange={(event) => setEditingExpense((current) => current && { ...current, type: event.target.value as 'negocio' | 'personal' })}>
+            <select value={editingExpense.type} onChange={(event) => setEditingExpense((current) => current && { ...current, type: event.target.value as ExpenseType })}>
               <option value="negocio">Gasto del negocio (sale del dinero del negocio)</option>
               <option value="personal">Gasto o retiro personal (sale de lo tuyo)</option>
+              {data.partners.length > 0 && <option value="socio">Pago a un socio (sale del dinero de ese socio)</option>}
             </select>
           </label>
+          {editingExpense.type === 'socio' && <label>Socio
+            <select required value={editingExpense.partnerId} onChange={(event) => setEditingExpense((current) => current && { ...current, partnerId: event.target.value })}>
+              <option value="" disabled>Elige el socio</option>
+              {data.partners.map((partner) => <option key={partner.id} value={partner.id}>{partner.name}</option>)}
+            </select>
+          </label>}
           <label>Descripción<input required value={editingExpense.description} onChange={(event) => setEditingExpense((current) => current && { ...current, description: event.target.value })} placeholder="Ej. transporte, comida, retiro..." /></label>
           <label>Monto (RD$)<input required type="number" min={0} step="0.01" value={editingExpense.amount} onChange={(event) => setEditingExpense((current) => current && { ...current, amount: event.target.value })} /></label>
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Registrar gasto'}</button>
+          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : editingExpense.type === 'socio' ? 'Registrar pago' : 'Registrar gasto'}</button>
+        </form>
+      </div></div>}
+
+      {editingPartner && <div className="modal-wrap"><div className="modal-card">
+        <button className="modal-close icon-button" onClick={() => setEditingPartner(null)}><X /></button>
+        <h2>{editingPartner.id ? 'Editar socio' : 'Agregar socio'}</h2>
+        <p>Lo que se compre con su dinero queda marcado. Cuando se vende, lo que costó vuelve a su dinero y la ganancia se divide: su % para él y el resto para ti.</p>
+        <form className="product-form" onSubmit={handleSavePartner}>
+          <label>Nombre<input required value={editingPartner.name} onChange={(event) => setEditingPartner((current) => current && { ...current, name: event.target.value })} placeholder="Ej. María" /></label>
+          <div className="form-row">
+            <label>Lo que invirtió (RD$)<input required type="number" inputMode="decimal" min={0} step="0.01" value={editingPartner.capital} onChange={(event) => setEditingPartner((current) => current && { ...current, capital: event.target.value })} placeholder="Ej. 5000" /></label>
+            <label>% de la ganancia para él<input required type="number" inputMode="numeric" min={0} max={100} value={editingPartner.percent} onChange={(event) => setEditingPartner((current) => current && { ...current, percent: event.target.value })} /></label>
+          </div>
+          <p className="content-hint">50 = la ganancia se divide entre los dos por igual.</p>
+          <label>Nota (opcional)<input value={editingPartner.notes} onChange={(event) => setEditingPartner((current) => current && { ...current, notes: event.target.value })} placeholder="Ej. teléfono, acuerdo..." /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary-button full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar socio'}</button>
         </form>
       </div></div>}
     </div>

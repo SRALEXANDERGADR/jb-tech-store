@@ -91,6 +91,14 @@ Cómo está hecho:
   - Si se borra un lote de reinversión, su dinero vuelve solo a "Para reinvertir" (baja su `totalCost`).
 - Los lotes y pedidos de antes quedaron como `capital` y sin `reinvCost`, así que sus números no cambiaron.
 
+## Socios (personas que ponen dinero para comprar mercancía)
+Lo pidió Yeilin: "Maria capital 5,000, ventas 10,000: 5 son el capital y los otros 5 son ganancia, eso se divide entre dos". Su dinero no se mezcla con el del negocio.
+- Tabla `partners` (`name`, `capital` = lo que invirtió, `percent` = % de la ganancia para el socio, 50 por defecto, `active`). Se crean, editan y quitan en Finanzas → "Socios". Quitar un socio con historial solo lo oculta (`active = false`).
+- En "Reponer", cada socio activo sale como otra opción de dinero: el lote queda con `purchases.fund = 'socio'` y `purchases.partner_id`.
+- Cada línea de pedido guarda `partnerShares: [{ partnerId, qty, cost }]` (como `reinvQty`/`reinvCost`, pero por socio; `cost` es el TOTAL). En `store.ts` todas las cajas se manejan juntas con `Share` (`'reinversion'` o `'socio:<id>'`): `consumeFifoCost`, `returnToFifo`, `shrinkPool`, `withShares`, `lineShares`. Cancelar/reactivar/editar un pedido devuelve cada unidad a su caja.
+- Pagos al socio: `expenses.type = 'socio'` con `expenses.partner_id` ("Registrar pago a …").
+- Cuentas por socio (en `AdminPanel.tsx`): `ganancia = ventas de su mercancía − recuperado`; `parteSocio = ganancia × percent`; el resto (`parteDuena`) va directo a "Puedes retirar" (no se reparte 70/30). **Su dinero ahora** = capital − compras con su dinero + recuperado + parteSocio − pagado. La ganancia de socios NO entra en `gananciaNegocio`, y lo recuperado NO vuelve al dinero del negocio.
+
 ## Otros detalles
 - La sesión del admin dura 12 horas (`SESSION_HOURS` en `src/lib/auth.ts`). Se le ofreció al dueño subirla a 30 días para la app; no ha decidido. No lo cambies sin preguntar.
 - `src/routes/__root.tsx` tiene un `errorComponent` que muestra "No pudimos cargar la tienda" y esconde el error real. Si algo falla, busca el error en los logs de Cloudflare, no en la pantalla.
