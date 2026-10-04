@@ -36,8 +36,6 @@ export const Route = createRootRoute({
       // Facebook, etc.
       { property: 'og:url', content: 'https://jbtechstore.com/' },
       { property: 'og:image', content: 'https://jbtechstore.com/og-cover.png' },
-      { property: 'og:image:width', content: '1200' },
-      { property: 'og:image:height', content: '630' },
       { property: 'og:locale', content: 'es_DO' },
       { property: 'og:site_name', content: 'JB Tech Store' },
       { name: 'twitter:card', content: 'summary_large_image' },

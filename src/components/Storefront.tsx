@@ -4,7 +4,7 @@ import { Link, useRouter } from '@tanstack/react-router'
 import {
   ArrowLeft, ArrowRight, BatteryCharging, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Facebook, Flame, Gamepad2,
   Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, MessageCircle, Minus, Package, Phone, Plus,
-  Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Store, Trash2, Truck, Watch, X,
+  Search, Share2, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Store, Trash2, Truck, Watch, X,
 } from 'lucide-react'
 import { cancelMyOrder, createOrder, getMyOrders, type CartLine } from '@/lib/store'
 import { hasOwnPrice, optionPrice, optionStock, parseOptions as parseOptionList, priceRange, resolveOption, tracksOptionStock, variantFor, lineName } from '@/lib/variants'
@@ -27,10 +27,25 @@ type Product = {
   isNew: boolean
   bestSeller: boolean
 }
-type Props = { data: { products: Product[]; content: Record<string, string> } }
+type Props = { data: { products: Product[]; content: Record<string, string> }; initialProductId?: number }
 
 // RD$1,250 con una función propia: el formato del navegador ponía «DOP» en Android.
 const money = (value: number) => `${value < 0 ? '-' : ''}RD$${Math.round(Math.abs(value) / 100).toLocaleString('en-US')}`
+
+/** Comparte un artículo con su enlace propio (/p/<id>), que abre la tienda
+ * con ese artículo y sale con su foto en WhatsApp. En el teléfono abre el
+ * menú de compartir (WhatsApp, Instagram, Messenger…); si no hay, copia el
+ * enlace. */
+async function shareProduct(product: Product, onCopied: () => void) {
+  const url = `${window.location.origin}/p/${product.id}`
+  const range = priceRange(product)
+  const text = `Mira este artículo en JB Tech Store: ${product.name} · ${range.min !== range.max ? 'desde ' : ''}${money(range.min)}`
+  if (navigator.share) {
+    try { await navigator.share({ title: product.name, text, url }) } catch { /* cerró el menú */ }
+    return
+  }
+  try { await navigator.clipboard.writeText(`${text}\n${url}`); onCopied() } catch { /* sin portapapeles */ }
+}
 
 // ─── Mis pedidos ───────────────────────────────────────────────────────
 // El teléfono guarda el número de cada pedido con su clave secreta (y los
@@ -320,7 +335,7 @@ function QtyInput({ value, max, onChange, className = '' }: { value: number; max
 
 type AddHandler = (product: Product, option: string | undefined, quantity: number) => boolean
 
-function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddHandler; onOpen: (product: Product, option: string, index: number) => void }) {
+function ProductCard({ product, onAdd, onOpen, onShare }: { product: Product; onAdd: AddHandler; onOpen: (product: Product, option: string, index: number) => void; onShare: (product: Product) => void }) {
   const options = useMemo(() => parseOptions(product), [product])
   const gallery = useMemo(() => buildGallery(product, options), [product, options])
   const [selected, setSelected] = useState(() => defaultOption(product))
@@ -369,6 +384,7 @@ function ProductCard({ product, onAdd, onOpen }: { product: Product; onAdd: AddH
         <Gallery items={gallery} index={index} onIndexChange={handleIndex} alt={product.name} className="card-gallery" />
         {percent > 0 && <span className="discount-badge">-{percent}%</span>}
         {soldOut && <span className="stock-badge">Agotado</span>}
+        <button type="button" className="card-share" aria-label={`Compartir ${product.name}`} title="Compartir" onClick={(event) => { event.stopPropagation(); onShare(product) }}><Share2 size={15} /></button>
       </div>
       <div className="product-card-body">
         <h3>{product.name}</h3>
@@ -414,9 +430,9 @@ const SHEET_ANIMATION_MS = 280
  * de foto, opciones con miniaturas, cantidad, descripción completa, un
  * carrito flotante arriba y el botón de agregar fijo abajo. Agregar NO
  * abre el carrito: solo muestra un aviso y sube el contador. */
-function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, onAdd, onOpenCart, onClose }: {
+function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, onAdd, onOpenCart, onShare, onClose }: {
   product: Product; initialOption: string; initialIndex: number; copy: Record<string, string>; cartCount: number
-  onAdd: AddHandler; onOpenCart: () => void; onClose: () => void
+  onAdd: AddHandler; onOpenCart: () => void; onShare: (product: Product) => void; onClose: () => void
 }) {
   const options = useMemo(() => parseOptions(product), [product])
   const gallery = useMemo(() => buildGallery(product, options), [product, options])
@@ -519,6 +535,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
               {percent > 0 && <p className="pd-save">Ahorras {money(product.originalPrice - product.price)}</p>}
 
               <h2 className="pd-title">{product.name}</h2>
+              <button type="button" className="pd-share" onClick={() => onShare(product)}><Share2 size={15} />Compartir este artículo</button>
 
               <div className="pd-tags">
                 <span className="pd-tag-cat">{product.category}</span>
@@ -804,7 +821,7 @@ function useWelcomeAudio(url: string) {
   }, [url])
 }
 
-export function Storefront({ data }: Props) {
+export function Storefront({ data, initialProductId }: Props) {
   const { products, content: copy } = data
   const whatsappDigits = copy.whatsapp.replace(/\D/g, '')
 
@@ -842,6 +859,13 @@ export function Storefront({ data }: Props) {
   const [hasOrders, setHasOrders] = useState(false)
   const [savedCustomer, setSavedCustomer] = useState<SavedCustomer | null>(null)
   useEffect(() => { setHasOrders(readMyOrders().length > 0); setSavedCustomer(readCustomer()) }, [])
+  // Enlace de un artículo (/p/<id>): la ficha de ese artículo se abre sola.
+  useEffect(() => {
+    const product = initialProductId ? products.find((item) => item.id === initialProductId) : undefined
+    if (product) setQuickView({ product, option: defaultOption(product), index: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialProductId])
+  const onShareProduct = (product: Product) => void shareProduct(product, () => showToast({ title: 'Enlace copiado', name: product.name, image: product.image }))
 
   async function loadMyOrders() {
     const keys = readMyOrders()
@@ -1166,7 +1190,7 @@ export function Storefront({ data }: Props) {
           <button className={offersTab === 'bestSeller' ? 'active' : ''} onClick={() => setOffersTab('bestSeller')}>Más vendidos</button>
         </div>
         <div className="product-grid">
-          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} />)}
+          {offersProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} onShare={onShareProduct} />)}
         </div>
       </section>
 
@@ -1194,7 +1218,7 @@ export function Storefront({ data }: Props) {
             </div>
           </aside>
           <div className="product-grid">
-            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} />)}
+            {visibleProducts.map((product) => <ProductCard key={product.id} product={product} onAdd={addToCart} onOpen={(item, option, index) => setQuickView({ product: item, option, index })} onShare={onShareProduct} />)}
             {visibleProducts.length === 0 && <div className="empty-state"><Search /><h3>No encontramos ese producto</h3><p>Prueba otra palabra o categoría.</p></div>}
           </div>
         </div>
@@ -1317,7 +1341,7 @@ export function Storefront({ data }: Props) {
 
     {ordersOpen && <MyOrdersModal list={myOrders} loading={ordersLoading} error={ordersError} busy={ordersBusy} whatsapp={whatsappDigits} onReload={() => void loadMyOrders()} onFix={(order) => void cancelOrder(order, true)} onCancel={(order) => void cancelOrder(order, false)} onClose={() => setOrdersOpen(false)} />}
 
-    {quickView && <ProductSheet key={quickView.product.id} product={quickView.product} initialOption={quickView.option} initialIndex={quickView.index} copy={copy} cartCount={cartCount} onAdd={addToCart} onOpenCart={openCartFromSheet} onClose={() => setQuickView(null)} />}
+    {quickView && <ProductSheet key={quickView.product.id} product={quickView.product} initialOption={quickView.option} initialIndex={quickView.index} copy={copy} cartCount={cartCount} onAdd={addToCart} onOpenCart={openCartFromSheet} onShare={onShareProduct} onClose={() => setQuickView(null)} />}
 
     <div className="receipt-capture" ref={receiptRef}>
       {confirmation && <OrderReceipt orderNumber={confirmation.orderNumber} items={confirmation.items} total={confirmation.total} whatsapp={whatsappDigits} />}
