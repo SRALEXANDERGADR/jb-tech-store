@@ -175,10 +175,10 @@ function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const result = await db.execute(sql`select
-        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id')))
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id') or (table_name = 'orders' and column_name = 'access_token')))
         + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name in ('push_subscriptions', 'partners')) as n`)
       const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 7) return
+      if (Number(rows[0]?.n ?? 0) >= 8) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "fund" text NOT NULL DEFAULT 'capital'`)
@@ -186,6 +186,7 @@ function ensureSchema(): Promise<void> {
       await db.execute(sql`CREATE TABLE IF NOT EXISTS "partners" ("id" serial PRIMARY KEY, "name" text NOT NULL, "capital" integer NOT NULL DEFAULT 0, "percent" integer NOT NULL DEFAULT 50, "notes" text NOT NULL DEFAULT '', "active" boolean NOT NULL DEFAULT true, "created_at" timestamp NOT NULL DEFAULT now())`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
       await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
+      await db.execute(sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "access_token" text NOT NULL DEFAULT ''`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
       throw error
@@ -566,7 +567,7 @@ export const createOrder = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     // Campo trampa: si viene lleno, lo mandó un robot. Se responde como si
     // todo hubiera salido bien, pero no se guarda nada ni se toca el stock.
-    if (data.website) return { orderNumber: makeFolio('PED'), total: 0, orderId: 0 }
+    if (data.website) return { orderNumber: makeFolio('PED'), total: 0, orderId: 0, token: '' }
     if ((data.phone || '').replace(/\D/g, '').length < 10) throw new Error('Escribe un teléfono válido de 10 dígitos.')
     data = { ...data, name: String(data.name || '').trim().slice(0, 80), phone: String(data.phone || '').trim().slice(0, 30), email: String(data.email || '').trim().slice(0, 120), address: String(data.address || '').trim().slice(0, 300) }
     if (!data.name?.trim() || !data.phone?.trim() || !Array.isArray(data.items) || !data.items.length) throw new Error('Completa todos los datos del pedido.')
@@ -606,7 +607,8 @@ export const createOrder = createServerFn({ method: 'POST' })
     const orderNumber = makeFolio('PED')
     const createdAt = new Date()
 
-    const [order] = await db.insert(orders).values({ orderNumber, customerId: customer.id, customerName: data.name, email: data.email, phone: data.phone, address: data.address, items: calculated, total, createdAt }).returning()
+    const accessToken = newAccessToken()
+    const [order] = await db.insert(orders).values({ orderNumber, customerId: customer.id, customerName: data.name, email: data.email, phone: data.phone, address: data.address, items: calculated, total, createdAt, accessToken }).returning()
 
     const [notificationRow] = await db.select().from(content).where(eq(content.key, 'notificationEmail')).limit(1)
     if (notificationRow?.value) {
@@ -626,7 +628,77 @@ export const createOrder = createServerFn({ method: 'POST' })
       })
     } catch { /* sin aviso, pero el pedido está bien */ }
 
-    return { orderNumber, total, orderId: order.id }
+    return { orderNumber, total, orderId: order.id, token: accessToken }
+  })
+
+// ───────────────────────────────────────────────────────────────────────
+// MIS PEDIDOS — el teléfono del cliente guarda el número de cada pedido con
+// su clave secreta. Con eso ve cómo va (sin contraseña) y, mientras siga
+// pendiente y sin pagar, lo puede cancelar o corregir (vuelve al carrito).
+// ───────────────────────────────────────────────────────────────────────
+function newAccessToken() {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+type OrderKey = { orderNumber: string; token: string }
+const cleanKeys = (list: unknown): OrderKey[] => (Array.isArray(list) ? list : [])
+  .map((item) => ({ orderNumber: String((item as OrderKey)?.orderNumber || '').slice(0, 40), token: String((item as OrderKey)?.token || '').slice(0, 64) }))
+  .filter((item) => item.orderNumber && item.token.length >= 32)
+  .slice(0, 30)
+
+const canCustomerEdit = (order: { status: string; paymentStatus: string }) => order.status === 'Pendiente' && order.paymentStatus === 'Pendiente'
+
+export const getMyOrders = createServerFn({ method: 'POST' })
+  .inputValidator((data: { orders: OrderKey[] }) => ({ orders: cleanKeys(data?.orders) }))
+  .handler(async ({ data }) => {
+    if (!data.orders.length) return []
+    await ensureSchema()
+    const rows = await db.select().from(orders).where(and(inArray(orders.orderNumber, data.orders.map((item) => item.orderNumber)), isNull(orders.deletedAt)))
+    const productRows = await db.select({ id: products.id, image: products.image, variantImages: products.variantImages }).from(products).where(inArray(products.id, [...new Set(rows.flatMap((row) => row.items.map((item) => item.id)))].concat(0)))
+    return rows
+      .filter((row) => data.orders.some((key) => key.orderNumber === row.orderNumber && row.accessToken && key.token === row.accessToken))
+      .sort((a, b) => +b.createdAt - +a.createdAt)
+      .map((row) => ({
+        orderNumber: row.orderNumber,
+        createdAt: row.createdAt.toISOString(),
+        status: row.status,
+        paymentStatus: row.paymentStatus,
+        discount: row.discount,
+        total: row.total,
+        canEdit: canCustomerEdit(row),
+        // Al cliente nunca se le manda el costo.
+        items: row.items.map((item) => {
+          const product = productRows.find((entry) => entry.id === item.id)
+          const variant = (product?.variantImages || []).find((entry) => entry.option === item.option)
+          return { productId: item.id, name: item.name, option: item.option ?? '', price: item.price, quantity: item.quantity, image: variant?.image || product?.image || '' }
+        }),
+      }))
+  })
+
+/** El cliente cancela su pedido (para corregirlo o porque ya no lo quiere).
+ * Solo si sigue pendiente y sin pagar. Sus unidades vuelven al inventario. */
+export const cancelMyOrder = createServerFn({ method: 'POST' })
+  .inputValidator((data: OrderKey) => cleanKeys([data])[0] ?? { orderNumber: '', token: '' })
+  .handler(async ({ data }) => {
+    if (!data.orderNumber) throw new Error('No encontramos ese pedido.')
+    await ensureSchema()
+    const [order] = await db.select().from(orders).where(and(eq(orders.orderNumber, data.orderNumber), isNull(orders.deletedAt))).limit(1)
+    if (!order || !order.accessToken || order.accessToken !== data.token) throw new Error('No encontramos ese pedido.')
+    if (!canCustomerEdit(order)) throw new Error(order.status === 'Cancelado' ? 'Este pedido ya está cancelado.' : 'Este pedido ya fue confirmado, así que no se puede cambiar desde aquí. Escríbenos por WhatsApp y lo corregimos.')
+    const stamp = new Intl.DateTimeFormat('es-DO', { timeZone: 'America/Santo_Domingo', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date())
+    // Primero se marca como cancelado (solo si seguía pendiente): así, si se
+    // toca dos veces, las unidades no se devuelven dos veces.
+    const [updated] = await db.update(orders)
+      .set({ status: 'Cancelado', notes: `${order.notes ? `${order.notes}\n` : ''}Cancelado por el cliente desde la tienda (${stamp}).` })
+      .where(and(eq(orders.id, order.id), eq(orders.status, 'Pendiente'), eq(orders.paymentStatus, 'Pendiente'))).returning()
+    if (!updated) throw new Error('Este pedido ya cambió de estado. Recarga la página.')
+    await releaseOrderStock(order)
+    try {
+      await notifyAdmins({ title: `↩️ Pedido cancelado por el cliente`, body: `${order.customerName} canceló el pedido ${order.orderNumber} (${formatMoney(order.total)}). Sus unidades volvieron al inventario.`.slice(0, 220), url: '/admin?tab=pedidos', tag: `${order.orderNumber}-cancel` })
+    } catch { /* sin aviso */ }
+    return { items: order.items.map((item) => ({ productId: item.id, name: item.name, option: item.option ?? '', quantity: item.quantity })) }
   })
 
 // ───────────────────────────────────────────────────────────────────────
@@ -740,6 +812,28 @@ export const purgeProduct = createServerFn({ method: 'POST' }).inputValidator((i
 // ───────────────────────────────────────────────────────────────────────
 // ADMIN — pedidos
 // ───────────────────────────────────────────────────────────────────────
+/** Devuelve al inventario (y a su lote/caja) las unidades de un pedido. */
+async function releaseOrderStock(order: { items: OrderItem[] }) {
+  const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
+  for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity, lineShares(item))
+}
+
+/** Vuelve a sacar del inventario las unidades de un pedido (si todavía hay).
+ * El costo y de qué dinero salió se recalculan: pueden salir de otros lotes. */
+async function retakeOrderStock(order: { items: OrderItem[] }): Promise<OrderItem[]> {
+  const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
+  if (order.items.some((item) => !rows.some((row) => row.id === item.id))) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
+  const lines = order.items.map((item) => ({ productId: item.id, option: itemOption(rows, item), quantity: item.quantity }))
+  checkAvailability(lines, rows)
+  const next: OrderItem[] = []
+  for (const [index, item] of order.items.entries()) {
+    const option = lines[index].option
+    const taken = await takeStock(item.id, option, item.quantity, item.name)
+    next.push(withShares({ ...item, option, cost: Math.round(taken.cost / Math.max(1, item.quantity)) }, taken.shares))
+  }
+  return next
+}
+
 export const updateOrderStatus = createServerFn({ method: 'POST' })
   .inputValidator((data: { id: number; status: string; paymentStatus: string; notes?: string }) => data)
   .handler(async ({ data }) => {
@@ -753,24 +847,8 @@ export const updateOrderStatus = createServerFn({ method: 'POST' })
     // Cancelar un pedido devuelve sus unidades al inventario (el cliente no
     // se lo llevó). Quitarle el "Cancelado" las vuelve a sacar — si todavía
     // hay stock suficiente; si no, avisa y no cambia nada.
-    if (!wasCancelled && willBeCancelled) {
-      const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
-      for (const item of order.items) await returnStock(item.id, itemOption(rows, item), item.quantity, lineShares(item))
-    } else if (wasCancelled && !willBeCancelled) {
-      const rows = await db.select().from(products).where(inArray(products.id, order.items.map((item) => item.id)))
-      if (order.items.some((item) => !rows.some((row) => row.id === item.id))) throw new Error('Uno de los productos de este pedido ya no existe; no se puede reactivar.')
-      const lines = order.items.map((item) => ({ productId: item.id, option: itemOption(rows, item), quantity: item.quantity }))
-      checkAvailability(lines, rows)
-      const next: OrderItem[] = []
-      for (const [index, item] of order.items.entries()) {
-        const option = lines[index].option
-        const taken = await takeStock(item.id, option, item.quantity, item.name)
-        // El costo (y de qué dinero salió) se vuelve a calcular: las unidades
-        // pueden salir ahora de otros lotes que cuando se hizo el pedido.
-        next.push(withShares({ ...item, option, cost: Math.round(taken.cost / Math.max(1, item.quantity)) }, taken.shares))
-      }
-      items = next
-    }
+    if (!wasCancelled && willBeCancelled) await releaseOrderStock(order)
+    else if (wasCancelled && !willBeCancelled) items = await retakeOrderStock(order)
     await db.update(orders).set({ status: data.status, paymentStatus: data.paymentStatus, items, ...(data.notes !== undefined ? { notes: data.notes } : {}) }).where(eq(orders.id, data.id))
     return true
   })
@@ -881,15 +959,23 @@ export const updateOrder = createServerFn({ method: 'POST' })
     return true
   })
 
+// Mandar un pedido a la papelera devuelve sus unidades al inventario (y a
+// su lote), igual que cancelarlo; así el stock nunca queda más bajo de lo
+// que hay de verdad. Restaurarlo las vuelve a sacar (si todavía hay). Un
+// pedido cancelado ya las devolvió, así que no toca el stock.
 export const deleteOrder = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
-  await db.update(orders).set({ deletedAt: new Date() }).where(eq(orders.id, data))
+  const [order] = await db.update(orders).set({ deletedAt: new Date() }).where(and(eq(orders.id, data), isNull(orders.deletedAt))).returning()
+  if (order && order.status !== 'Cancelado') await releaseOrderStock(order)
   return true
 })
 
 export const restoreOrder = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {
   await requireAdmin()
-  await db.update(orders).set({ deletedAt: null }).where(eq(orders.id, data))
+  const [order] = await db.select().from(orders).where(eq(orders.id, data)).limit(1)
+  if (!order || !order.deletedAt) return true
+  const items = order.status !== 'Cancelado' ? await retakeOrderStock(order) : order.items
+  await db.update(orders).set({ deletedAt: null, items }).where(eq(orders.id, data))
   return true
 })
 
@@ -1214,7 +1300,7 @@ export const deleteExpense = createServerFn({ method: 'POST' }).inputValidator((
 const PUSH_SUBJECT = 'https://jbtechstore.com'
 
 function formatMoney(cents: number) {
-  return new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(cents / 100)
+  return `${cents < 0 ? '-' : ''}RD$${Math.round(Math.abs(cents) / 100).toLocaleString('en-US')}`
 }
 
 /** Claves VAPID de la tienda: se crean solas la primera vez y se guardan

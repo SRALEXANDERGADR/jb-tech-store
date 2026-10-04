@@ -10,7 +10,7 @@
 // nada: un fallo o falta de configuración en el correo nunca debe
 // interrumpir el registro del pedido.
 
-const money = (cents: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP' }).format(cents / 100)
+const money = (cents: number) => `${cents < 0 ? '-' : ''}RD$${(Math.abs(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const shortDate = (value: string | Date) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 
 type EmailOrder = {

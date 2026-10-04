@@ -101,6 +101,9 @@ export const orders = pgTable('orders', {
   notes: text('notes').notNull().default(''), // notas internas del admin
   createdAt: timestamp('created_at').notNull().defaultNow(),
   deletedAt: timestamp('deleted_at'), // papelera
+  // Clave secreta del pedido: la guarda el teléfono del cliente para ver en
+  // «Mis pedidos» cómo va su pedido y corregirlo mientras esté pendiente.
+  accessToken: text('access_token').notNull().default(''),
 })
 
 // ───────────────────────────────────────────────────────────────────────

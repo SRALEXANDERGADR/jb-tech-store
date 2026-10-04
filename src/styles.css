@@ -141,7 +141,8 @@ input, select, textarea { font-family: inherit; }
 .side-menu.open { transform: translateX(0); }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .drawer-kicker { font-size: 11px; font-weight: 800; letter-spacing: 0.14em; color: var(--blue-400); text-transform: uppercase; margin: 14px 0 4px; display: block; }
-.side-menu a, .side-menu > a {
+.side-menu a, .side-menu > a, .side-menu .drawer-link {
+  width: 100%; background: none; border-top: 0; border-left: 0; border-right: 0; text-align: left; font-family: inherit;
   display: flex; align-items: center; justify-content: space-between; padding: 12px 4px;
   color: var(--ink); font-weight: 600; font-size: 14.5px; border-bottom: 1px solid rgba(255,255,255,0.06);
 }
@@ -1074,3 +1075,38 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .app-device { display: flex; align-items: center; gap: 8px; color: var(--ink-dim); font-size: 12.5px; }
 .app-device span { flex: 1; min-width: 0; }
 .app-device button { border: none; background: rgba(255,255,255,.06); color: var(--ink-dim); width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+
+
+/* ─── Mis pedidos (el cliente ve cómo va su pedido y lo corrige) ─── */
+.confirmation-note { color: var(--ink-faint) !important; font-size: 12.5px !important; margin-top: 2px; }
+.my-orders > p { margin-bottom: 14px; }
+.my-orders-empty { text-align: center; color: var(--ink-faint); padding: 34px 10px; font-size: 13.5px; }
+.my-orders-empty h3 { color: var(--ink); font-size: 15px; margin: 10px 0 4px; }
+.my-orders-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
+.my-order { background: var(--navy-900); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-md); padding: 14px; }
+.my-order.cancelled { opacity: 0.7; }
+.my-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.my-order-head strong { display: block; color: var(--white); font-size: 14.5px; letter-spacing: 0.02em; }
+.my-order-head small { color: var(--ink-faint); font-size: 12px; }
+.my-order-status { flex: none; font-size: 11.5px; font-weight: 800; padding: 4px 10px; border-radius: 999px; background: rgba(96,165,250,0.15); color: var(--blue-400); }
+.my-order-status.s-entregado { background: rgba(34,197,94,0.15); color: var(--green); }
+.my-order-status.s-cancelado { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.my-order-status.s-enviado { background: rgba(255,138,31,0.16); color: #ffb26b; }
+.my-order-steps { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 14px 0 6px; padding: 0; }
+.my-order-steps li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: var(--ink-faint); text-align: center; }
+.my-order-steps li i { width: 14px; height: 14px; border-radius: 50%; background: var(--navy-600); border: 2px solid var(--navy-500); position: relative; z-index: 1; }
+.my-order-steps li::before { content: ''; position: absolute; top: 6px; right: 50%; width: 100%; height: 2px; background: var(--navy-600); }
+.my-order-steps li:first-child::before { display: none; }
+.my-order-steps li.done { color: var(--ink); }
+.my-order-steps li.done i { background: var(--green); border-color: var(--green); }
+.my-order-steps li.done::before { background: var(--green); }
+.my-order-items { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.my-order-items li { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 13px; color: var(--ink-dim); }
+.my-order-items img, .my-order-noimg { width: 40px; height: 40px; border-radius: var(--radius-sm); object-fit: contain; background: var(--stage); padding: 2px; display: flex; align-items: center; justify-content: center; color: var(--navy-500); }
+.my-order-items b { color: var(--ink); font-size: 13px; }
+.my-order-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; border-top: 1px solid rgba(255,255,255,0.08); margin-top: 12px; padding-top: 10px; font-size: 12.5px; color: var(--ink-faint); }
+.my-order-foot strong { color: var(--white); font-size: 15px; }
+.my-order-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.my-order-actions button { width: 100%; justify-content: center; }
+.my-order-note { font-size: 12.5px; color: var(--ink-faint); margin-top: 10px; }
+.my-order-note a { color: var(--blue-400); text-decoration: underline; }

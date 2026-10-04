@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType, FormEvent, MouseEvent } from 'react'
-import { Link } from '@tanstack/react-router'
+import { Link, useRouter } from '@tanstack/react-router'
 import {
-  ArrowLeft, ArrowRight, BatteryCharging, Check, ChevronDown, ChevronLeft, ChevronRight, Facebook, Flame, Gamepad2,
+  ArrowLeft, ArrowRight, BatteryCharging, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Facebook, Flame, Gamepad2,
   Headphones, Home, Instagram, Laptop, LayoutGrid, Menu, MessageCircle, Minus, Package, Phone, Plus,
   Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Smartphone, Store, Trash2, Truck, Watch, X,
 } from 'lucide-react'
-import { createOrder, type CartLine } from '@/lib/store'
+import { cancelMyOrder, createOrder, getMyOrders, type CartLine } from '@/lib/store'
 import { hasOwnPrice, optionPrice, optionStock, parseOptions as parseOptionList, priceRange, resolveOption, tracksOptionStock, variantFor, lineName } from '@/lib/variants'
 import type { ProductVariant } from '@/lib/variants'
 import { ShareButton } from './ShareButton'
@@ -29,7 +29,91 @@ type Product = {
 }
 type Props = { data: { products: Product[]; content: Record<string, string> } }
 
-const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', maximumFractionDigits: 0 }).format(value / 100)
+// RD$1,250 con una función propia: el formato del navegador ponía «DOP» en Android.
+const money = (value: number) => `${value < 0 ? '-' : ''}RD$${Math.round(Math.abs(value) / 100).toLocaleString('en-US')}`
+
+// ─── Mis pedidos ───────────────────────────────────────────────────────
+// El teléfono guarda el número de cada pedido con su clave secreta (y los
+// datos del cliente para no escribirlos otra vez). Con eso el cliente ve
+// cómo va su pedido y lo corrige o cancela mientras esté pendiente.
+const MY_ORDERS_KEY = 'jb-mis-pedidos'
+const CUSTOMER_KEY = 'jb-cliente'
+type OrderKey = { orderNumber: string; token: string }
+type MyOrder = Awaited<ReturnType<typeof getMyOrders>>[number]
+type SavedCustomer = { name: string; phone: string; email: string; address: string }
+
+function readMyOrders(): OrderKey[] {
+  try { const list = JSON.parse(localStorage.getItem(MY_ORDERS_KEY) || '[]'); return Array.isArray(list) ? list.filter((item) => item?.orderNumber && item?.token) : [] } catch { return [] }
+}
+function rememberOrder(key: OrderKey) {
+  try { localStorage.setItem(MY_ORDERS_KEY, JSON.stringify([key, ...readMyOrders().filter((item) => item.orderNumber !== key.orderNumber)].slice(0, 30))) } catch { /* sin almacenamiento */ }
+}
+function readCustomer(): SavedCustomer | null {
+  try { const value = JSON.parse(localStorage.getItem(CUSTOMER_KEY) || 'null'); return value && typeof value === 'object' ? value : null } catch { return null }
+}
+
+const ORDER_STEPS = ['Pendiente', 'Confirmado', 'Preparando', 'Enviado', 'Entregado']
+const STEP_LABEL: Record<string, string> = { Pendiente: 'Recibido', Confirmado: 'Confirmado', Preparando: 'Preparando', Enviado: 'En camino', Entregado: 'Entregado', Cancelado: 'Cancelado' }
+
+function MyOrdersModal({ list, loading, error, busy, onReload, onFix, onCancel, onClose, whatsapp }: {
+  list: MyOrder[]; loading: boolean; error: string; busy: string; whatsapp: string
+  onReload: () => void; onFix: (order: MyOrder) => void; onCancel: (order: MyOrder) => void; onClose: () => void
+}) {
+  return (
+    <div className="modal-wrap" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="modal-card my-orders">
+        <button className="modal-close icon-button" onClick={onClose} aria-label="Cerrar"><X /></button>
+        <span className="drawer-kicker">MIS PEDIDOS</span>
+        <h2>Así van tus pedidos</h2>
+        <p>Se guardan en este teléfono. Mientras un pedido diga «Recibido», lo puedes corregir o cancelar.</p>
+        {error && <p className="form-error">{error}</p>}
+        {loading && !list.length && <p className="my-orders-empty">Buscando tus pedidos…</p>}
+        {!loading && !list.length && !error && <div className="my-orders-empty"><ClipboardList /><h3>Todavía no hay pedidos</h3><p>Cuando hagas un pedido desde este teléfono, aquí verás cómo va.</p></div>}
+        <div className="my-orders-list">
+          {list.map((order) => {
+            const step = ORDER_STEPS.indexOf(order.status)
+            const cancelled = order.status === 'Cancelado'
+            const date = new Intl.DateTimeFormat('es-DO', { timeZone: 'America/Santo_Domingo', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(order.createdAt))
+            return (
+              <article key={order.orderNumber} className={`my-order ${cancelled ? 'cancelled' : ''}`}>
+                <div className="my-order-head">
+                  <div><strong>{order.orderNumber}</strong><small>{date}</small></div>
+                  <span className={`my-order-status s-${order.status.toLowerCase()}`}>{STEP_LABEL[order.status] ?? order.status}</span>
+                </div>
+                {!cancelled && (
+                  <ol className="my-order-steps" aria-label="Estado del pedido">
+                    {ORDER_STEPS.map((name, index) => <li key={name} className={index <= step ? 'done' : ''}><i />{STEP_LABEL[name]}</li>)}
+                  </ol>
+                )}
+                <ul className="my-order-items">
+                  {order.items.map((item, index) => (
+                    <li key={index}>
+                      {item.image ? <img src={item.image} alt="" /> : <span className="my-order-noimg"><Package size={18} /></span>}
+                      <span>{item.quantity} × {item.name}</span>
+                      <b>{money(item.price * item.quantity)}</b>
+                    </li>
+                  ))}
+                </ul>
+                <div className="my-order-foot">
+                  <span>{order.paymentStatus === 'Pagado' ? 'Pagado' : cancelled ? '' : 'Pago pendiente'}</span>
+                  <strong>Total {money(order.total)}</strong>
+                </div>
+                {order.canEdit && (
+                  <div className="my-order-actions">
+                    <button className="primary-button" disabled={!!busy} onClick={() => onFix(order)}>{busy === order.orderNumber + ':fix' ? 'Un momento…' : 'Corregir pedido'}</button>
+                    <button className="ghost-button" disabled={!!busy} onClick={() => onCancel(order)}>{busy === order.orderNumber + ':cancel' ? 'Cancelando…' : 'Cancelar pedido'}</button>
+                  </div>
+                )}
+                {!order.canEdit && !cancelled && order.status !== 'Entregado' && <p className="my-order-note">¿Necesitas cambiar algo? <a href={`https://wa.me/${whatsapp}?text=${encodeURIComponent(`Hola, quiero cambiar algo de mi pedido ${order.orderNumber}.`)}`} target="_blank" rel="noreferrer">Escríbenos por WhatsApp</a>.</p>}
+              </article>
+            )
+          })}
+        </div>
+        {list.length > 0 && <button className="ghost-button full" disabled={loading} onClick={onReload}>{loading ? 'Actualizando…' : 'Actualizar'}</button>}
+      </div>
+    </div>
+  )
+}
 
 // La foto/descripción/precio/cantidad propios de cada opción (color,
 // diseño, modelo…) salen de src/lib/variants.ts (variantFor, optionPrice,
@@ -749,14 +833,80 @@ export function Storefront({ data }: Props) {
   const [toast, setToast] = useState<{ title: string; name: string; image: string } | null>(null)
   const [toastVisible, setToastVisible] = useState(false)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const router = useRouter()
+  const [ordersOpen, setOrdersOpen] = useState(false)
+  const [myOrders, setMyOrders] = useState<MyOrder[]>([])
+  const [ordersLoading, setOrdersLoading] = useState(false)
+  const [ordersError, setOrdersError] = useState('')
+  const [ordersBusy, setOrdersBusy] = useState('')
+  const [hasOrders, setHasOrders] = useState(false)
+  const [savedCustomer, setSavedCustomer] = useState<SavedCustomer | null>(null)
+  useEffect(() => { setHasOrders(readMyOrders().length > 0); setSavedCustomer(readCustomer()) }, [])
+
+  async function loadMyOrders() {
+    const keys = readMyOrders()
+    setHasOrders(keys.length > 0)
+    if (!keys.length) { setMyOrders([]); return }
+    setOrdersLoading(true)
+    setOrdersError('')
+    try { setMyOrders(await getMyOrders({ data: { orders: keys } })) } catch { setOrdersError('No pudimos cargar tus pedidos. Revisa tu conexión e intenta de nuevo.') } finally { setOrdersLoading(false) }
+  }
+  function openMyOrders() { setMenuOpen(false); setOrdersOpen(true); void loadMyOrders() }
+
+  /** Cancela el pedido (si sigue pendiente). Con `refill`, sus productos
+   * vuelven al carrito para cambiar lo que haga falta y enviarlo otra vez. */
+  async function cancelOrder(order: MyOrder, refill: boolean) {
+    const question = refill
+      ? `Para corregir el pedido ${order.orderNumber}, se cancela y sus productos vuelven a tu carrito. Ahí cambias lo que necesites y lo envías otra vez. ¿Seguimos?`
+      : `¿Cancelar el pedido ${order.orderNumber}? Esto no se puede deshacer.`
+    if (!window.confirm(question)) return
+    const key = readMyOrders().find((item) => item.orderNumber === order.orderNumber)
+    if (!key) return
+    setOrdersBusy(order.orderNumber + (refill ? ':fix' : ':cancel'))
+    setOrdersError('')
+    try {
+      const result = await cancelMyOrder({ data: key })
+      if (refill) {
+        // Las unidades del pedido acaban de volver al inventario: se cuentan
+        // como disponibles aunque la página todavía muestre el stock de antes.
+        setCart((current) => {
+          const next = [...current]
+          for (const item of result.items) {
+            const product = products.find((entry) => entry.id === item.productId)
+            if (!product) continue
+            const option = resolveOption(product, item.option, item.name)
+            if (parseOptions(product).length > 0 && !option) continue
+            const name = lineName(product.name, option)
+            const inCart = next.filter((line) => sameBucket(line, product.id, option)).reduce((sum, line) => sum + line.quantity, 0)
+            const room = optionStock(product, option) + item.quantity - inCart
+            const quantity = Math.min(item.quantity, room)
+            if (quantity <= 0) continue
+            const at = next.findIndex((line) => line.productId === product.id && line.name === name)
+            if (at >= 0) next[at] = { ...next[at], quantity: next[at].quantity + quantity }
+            else next.push({ productId: product.id, name, price: optionPrice(product, option), quantity, image: variantFor(product, option)?.image || product.image, option })
+          }
+          return next
+        })
+        setOrdersOpen(false)
+        setCartOpen(true)
+        showToast({ title: 'Tu pedido volvió al carrito', name: 'Cambia lo que necesites y envíalo otra vez', image: result.items.length ? (products.find((entry) => entry.id === result.items[0].productId)?.image ?? '') : '' })
+      }
+      void router.invalidate() // el inventario de la tienda se pone al día
+      await loadMyOrders()
+    } catch (caught) {
+      setOrdersError(caught instanceof Error ? caught.message : 'No pudimos cancelar el pedido.')
+    } finally {
+      setOrdersBusy('')
+    }
+  }
 
   // Mientras está abierta la ficha del producto, el carrito o el menú, la
   // página de atrás no se desplaza (evita el "doble scroll" en el teléfono).
   useEffect(() => {
-    const locked = Boolean(quickView || cartOpen || menuOpen || checkoutOpen)
+    const locked = Boolean(quickView || cartOpen || menuOpen || checkoutOpen || ordersOpen)
     document.documentElement.classList.toggle('scroll-locked', locked)
     return () => document.documentElement.classList.remove('scroll-locked')
-  }, [quickView, cartOpen, menuOpen, checkoutOpen])
+  }, [quickView, cartOpen, menuOpen, checkoutOpen, ordersOpen])
 
   const realCategories = useMemo(() => Array.from(new Set(products.map((product) => product.category))), [products])
   const categories = useMemo(() => ['Todos', ...realCategories], [realCategories])
@@ -886,7 +1036,14 @@ export function Storefront({ data }: Props) {
     try {
       const phoneDigits = String(form.get('phone') || '').replace(/\D/g, '')
       if (phoneDigits.length < 10) throw new Error('Escribe un teléfono válido de 10 dígitos (ej. 809 555 1234).')
-      const result = await createOrder({ data: { name: String(form.get('name')), phone: String(form.get('phone')), email: String(form.get('email')), address: String(form.get('address')), website: String(form.get('website') || ''), items: cart } })
+      const customer = { name: String(form.get('name') || ''), phone: String(form.get('phone') || ''), email: String(form.get('email') || ''), address: String(form.get('address') || '') }
+      const result = await createOrder({ data: { ...customer, website: String(form.get('website') || ''), items: cart } })
+      if (result.token) {
+        rememberOrder({ orderNumber: result.orderNumber, token: result.token })
+        setHasOrders(true)
+        try { localStorage.setItem(CUSTOMER_KEY, JSON.stringify(customer)) } catch { /* sin almacenamiento */ }
+        setSavedCustomer(customer)
+      }
       setConfirmation({ orderNumber: result.orderNumber, total: result.total, items: [...cart] })
       setCart([])
     } catch (caught) {
@@ -958,6 +1115,7 @@ export function Storefront({ data }: Props) {
       </nav>
       <div className="topbar-actions">
         <ShareButton title={copy.brandName} />
+        {hasOrders && <button className="cart-button" onClick={openMyOrders} aria-label="Mis pedidos" title="Mis pedidos"><ClipboardList size={19} /></button>}
         <button className="cart-button" onClick={() => setCartOpen(true)} aria-label="Ver carrito"><ShoppingCart size={19} />{cartCount > 0 && <b key={cartCount}>{cartCount}</b>}</button>
       </div>
     </header>
@@ -976,6 +1134,7 @@ export function Storefront({ data }: Props) {
       <a href="#tienda" onClick={() => setMenuOpen(false)}>Toda la tienda <ChevronRight size={15} /></a>
       <a href="#ofertas" onClick={() => setMenuOpen(false)}>Ofertas <ChevronRight size={15} /></a>
       <a href="#contacto" onClick={() => setMenuOpen(false)}>Contacto <ChevronRight size={15} /></a>
+      <button type="button" className="drawer-link" onClick={openMyOrders}>Mis pedidos <ChevronRight size={15} /></button>
       <Link to="/politicas" onClick={() => setMenuOpen(false)}>Políticas <ChevronRight size={15} /></Link>
       <Link to="/terminos" onClick={() => setMenuOpen(false)}>Términos y condiciones <ChevronRight size={15} /></Link>
       <div className="drawer-admin"><span>Área privada</span><Link to="/admin">Entrar al panel administrativo</Link></div>
@@ -1087,6 +1246,7 @@ export function Storefront({ data }: Props) {
       <a href="#inicio"><Home size={20} /><span>Inicio</span></a>
       <a href="#tienda"><Store size={20} /><span>Tienda</span></a>
       <button onClick={() => setCartOpen(true)}><ShoppingCart size={20} />{cartCount > 0 && <b key={cartCount}>{cartCount}</b>}<span>Carrito</span></button>
+      {hasOrders && <button onClick={openMyOrders}><ClipboardList size={20} /><span>Pedidos</span></button>}
       <a href={`https://wa.me/${whatsappDigits}`} target="_blank" rel="noreferrer"><WhatsAppIcon size={20} /><span>WhatsApp</span></a>
     </nav>
 
@@ -1127,6 +1287,8 @@ export function Storefront({ data }: Props) {
         <p>Total: {money(confirmation.total)}. Te contactaremos para coordinar pago y entrega, o envíanos tu pedido ahora mismo por WhatsApp:</p>
         <button className="primary-button" onClick={sendOrderText}><WhatsAppIcon size={16} />Enviar pedido por WhatsApp</button>
         <button className="ghost-button" disabled={sharingImage} onClick={shareOrderImage}>{sharingImage ? 'Generando imagen…' : 'O comparte la imagen del pedido'}</button>
+        <button className="ghost-button" onClick={() => { setCheckoutOpen(false); setConfirmation(null); openMyOrders() }}>Ver cómo va mi pedido</button>
+        <p className="confirmation-note">¿Te equivocaste en algo? En «Mis pedidos» lo puedes corregir mientras no lo hayamos confirmado.</p>
         <button className="ghost-button" onClick={() => { setCheckoutOpen(false); setConfirmation(null) }}>Volver a la tienda</button>
       </div> : <div className="checkout-grid">
         <div>
@@ -1134,13 +1296,13 @@ export function Storefront({ data }: Props) {
           <h2>{copy.checkoutTitle}</h2>
           <p>Déjanos tus datos para coordinar pago y entrega.</p>
           <form id="checkout-form" onSubmit={submitOrder}>
-            <input required name="name" autoComplete="name" maxLength={80} placeholder="Nombre completo" />
-            <input required name="phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono / WhatsApp (ej. 809 555 1234)" />
+            <input required name="name" autoComplete="name" maxLength={80} placeholder="Nombre completo" defaultValue={savedCustomer?.name ?? ''} />
+            <input required name="phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="Teléfono / WhatsApp (ej. 809 555 1234)" defaultValue={savedCustomer?.phone ?? ''} />
             {/* Campo trampa invisible: las personas no lo ven ni lo llenan; los
                 robots que llenan todos los campos sí, y ese pedido se ignora. */}
             <input name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="hp-field" />
-            <input name="email" type="email" placeholder="Correo electrónico (opcional)" />
-            <textarea required name="address" autoComplete="street-address" maxLength={300} placeholder="Dirección de entrega (sector, calle, referencia)" rows={3} />
+            <input name="email" type="email" placeholder="Correo electrónico (opcional)" defaultValue={savedCustomer?.email ?? ''} />
+            <textarea required name="address" autoComplete="street-address" maxLength={300} placeholder="Dirección de entrega (sector, calle, referencia)" rows={3} defaultValue={savedCustomer?.address ?? ''} />
             {error && <p className="form-error">{error}</p>}
           </form>
         </div>
@@ -1152,6 +1314,8 @@ export function Storefront({ data }: Props) {
         </div>
       </div>}
     </div></div>}
+
+    {ordersOpen && <MyOrdersModal list={myOrders} loading={ordersLoading} error={ordersError} busy={ordersBusy} whatsapp={whatsappDigits} onReload={() => void loadMyOrders()} onFix={(order) => void cancelOrder(order, true)} onCancel={(order) => void cancelOrder(order, false)} onClose={() => setOrdersOpen(false)} />}
 
     {quickView && <ProductSheet key={quickView.product.id} product={quickView.product} initialOption={quickView.option} initialIndex={quickView.index} copy={copy} cartCount={cartCount} onAdd={addToCart} onOpenCart={openCartFromSheet} onClose={() => setQuickView(null)} />}
 
