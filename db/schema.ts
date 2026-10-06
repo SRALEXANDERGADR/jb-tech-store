@@ -44,6 +44,9 @@ export const products = pgTable('products', {
   featured: boolean('featured').notNull().default(false), // pestaña Destacados
   isNew: boolean('is_new').notNull().default(false), // pestaña Nuevos
   bestSeller: boolean('best_seller').notNull().default(false), // pestaña Más vendidos
+  // Garantía del producto, en texto (ej. "30 días", "3 meses"). '' = sin garantía.
+  // Al vender se copia a la línea del pedido (y se puede cambiar ahí).
+  warranty: text('warranty').notNull().default(''),
   active: boolean('active').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   // Papelera: NULL = visible normalmente. Con fecha = enviado a la
@@ -90,7 +93,7 @@ export const orders = pgTable('orders', {
   // unidad). `partnerShares` = lo mismo pero por cada socio (lotes pagados
   // con el dinero de un socio). Sin estos campos = todo salió del dinero
   // del negocio.
-  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }>>(),
+  items: jsonb('items').notNull().$type<Array<{ id: number; name: string; price: number; quantity: number; cost: number; option?: string; warranty?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }>>(),
   // Descuento manual aplicado por el admin al negociar con el cliente
   // (en centavos). 0 = sin descuento. `total` ya sale con el descuento
   // restado — se recalcula en el servidor cada vez que se edita el pedido.

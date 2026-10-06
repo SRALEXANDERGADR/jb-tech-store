@@ -18,7 +18,7 @@ const TRASH_MS = TRASH_DAYS * 24 * 60 * 60 * 1000
 
 export type CartLine = { productId: number; name: string; price: number; quantity: number; image: string; option?: string }
 type PartnerShare = { partnerId: number; qty: number; cost: number }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: PartnerShare[] }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; warranty?: string; reinvCost?: number; reinvQty?: number; partnerShares?: PartnerShare[] }
 type ProductRow = typeof products.$inferSelect
 type PurchaseRow = typeof purchases.$inferSelect
 
@@ -77,6 +77,8 @@ export const CATEGORIES = ['Teléfonos', 'Laptops', 'Accesorios', 'Cargadores y 
 const defaultContent: Record<string, string> = {
   brandName: 'JB TECH STORE',
   brandTagline: 'Tecnología, accesorios y confianza en un solo lugar.',
+  // Sale en la factura cuando algún producto del pedido tiene garantía.
+  warrantyTerms: 'La garantía cubre defectos de fábrica. No cubre golpes, humedad, pantallas rotas, mal uso ni equipos abiertos o reparados por otras personas. Para hacerla válida, presenta esta factura.',
   // Mensaje que se dice en voz alta (con la voz del propio navegador del
   // visitante) apenas entra a la tienda. Vacío = no se dice nada.
   welcomeVoiceText: 'Hola... te damos la bienvenida a... JB Tech Store... Esperamos que te guste nuestra variedad de productos.',
@@ -157,6 +159,12 @@ function pad(value: number, length = 2) {
 /** Folio con el mismo espíritu que usa Alexander Perfiles: prefijo + fecha
  * de emisión (DDMMAAAA) + un número corto, para que sea legible de un
  * vistazo y no se repita entre pedidos. */
+/** Garantía en texto corto ('' = sin garantía). */
+function cleanWarranty(value: unknown) {
+  const text = String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, 60)
+  return /^sin garant/i.test(text) ? '' : text
+}
+
 function makeFolio(prefix: string) {
   const now = new Date()
   const fecha = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear()}`
@@ -175,10 +183,10 @@ function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const result = await db.execute(sql`select
-        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id') or (table_name = 'orders' and column_name = 'access_token')))
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id') or (table_name = 'orders' and column_name = 'access_token') or (table_name = 'products' and column_name = 'warranty')))
         + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name in ('push_subscriptions', 'partners')) as n`)
       const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 8) return
+      if (Number(rows[0]?.n ?? 0) >= 9) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "fund" text NOT NULL DEFAULT 'capital'`)
@@ -187,6 +195,7 @@ function ensureSchema(): Promise<void> {
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
       await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
       await db.execute(sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "access_token" text NOT NULL DEFAULT ''`)
+      await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "warranty" text NOT NULL DEFAULT ''`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
       throw error
@@ -600,7 +609,7 @@ export const createOrder = createServerFn({ method: 'POST' })
     for (const line of lines) {
       const name = lineName(line.product.name, line.option)
       const taken = await takeStock(line.productId, line.option, line.quantity, name)
-      calculated.push(withShares({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.shares))
+      calculated.push(withShares({ id: line.productId, name, price: optionPrice(line.product, line.option), quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option, ...(line.product.warranty ? { warranty: line.product.warranty } : {}) }, taken.shares))
     }
     const total = calculated.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customer = await findOrCreateCustomer(data)
@@ -672,7 +681,7 @@ export const getMyOrders = createServerFn({ method: 'POST' })
         items: row.items.map((item) => {
           const product = productRows.find((entry) => entry.id === item.id)
           const variant = (product?.variantImages || []).find((entry) => entry.option === item.option)
-          return { productId: item.id, name: item.name, option: item.option ?? '', price: item.price, quantity: item.quantity, image: variant?.image || product?.image || '' }
+          return { productId: item.id, name: item.name, option: item.option ?? '', price: item.price, quantity: item.quantity, image: variant?.image || product?.image || '', warranty: item.warranty ?? '' }
         }),
       }))
   })
@@ -738,7 +747,7 @@ export const getAdminData = createServerFn({ method: 'GET' }).handler(async () =
 // ADMIN — catálogo
 // ───────────────────────────────────────────────────────────────────────
 export const saveProduct = createServerFn({ method: 'POST' })
-  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; variantImages: ProductVariant[]; optionStock?: boolean; renames?: Array<{ from: string; to: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }) => data)
+  .inputValidator((data: { id?: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; image: string; variantImages: ProductVariant[]; optionStock?: boolean; renames?: Array<{ from: string; to: string }>; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; warranty?: string }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     const name = data.name.trim()
@@ -763,7 +772,7 @@ export const saveProduct = createServerFn({ method: 'POST' })
       }
     })
     const stock = isNew ? 0 : trackOptions ? variantImages.reduce((sum, entry) => sum + (entry.stock ?? 0), 0) : Math.max(0, Math.round(Number(data.stock) || 0))
-    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: optionNames.join(', '), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock, image: data.image, variantImages, optionStock: trackOptions, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active }
+    const values = { name, category: data.category || 'Otros', description: data.description.trim(), options: optionNames.join(', '), price: Math.max(0, Math.round(data.price)), originalPrice: Math.max(0, Math.round(data.originalPrice)), stock, image: data.image, variantImages, optionStock: trackOptions, featured: data.featured, isNew: data.isNew, bestSeller: data.bestSeller, active: data.active, warranty: cleanWarranty(data.warranty) }
     if (data.id) {
       // Si se le cambió el nombre a una opción, sus lotes de compra la siguen.
       for (const rename of data.renames || []) {
@@ -868,7 +877,9 @@ export const updateOrder = createServerFn({ method: 'POST' })
     // qué dinero salió) se calcula aquí, a partir del pedido anterior.
     const items: OrderItem[] = data.items.map((item) => {
       const clean = { id: Number(item.id), name: String(item.name || '').trim().slice(0, 200) || 'Producto', price: Math.max(0, Math.round(Number(item.price) || 0)), quantity: Math.max(1, Math.round(Number(item.quantity) || 1)), cost: 0, option: String(item.option || '') }
-      return { ...clean, option: itemOption(rows, clean) }
+      // La garantía de cada línea se puede cambiar al editar el pedido.
+      const warranty = cleanWarranty(item.warranty)
+      return { ...clean, option: itemOption(rows, clean), ...(warranty ? { warranty } : {}) }
     })
     // Se cuenta por producto Y por opción: cuántas unidades tenía el pedido,
     // lo que costaron en total y lo que salió de cada caja.
@@ -1018,7 +1029,7 @@ export const recordManualSale = createServerFn({ method: 'POST' })
       const row = rows.find((item) => item.id === line.productId)!
       const name = lineName(row.name, line.option)
       const taken = await takeStock(row.id, line.option, line.quantity, name)
-      items.push(withShares({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option }, taken.shares))
+      items.push(withShares({ id: row.id, name, price: line.price, quantity: line.quantity, cost: Math.round(taken.cost / line.quantity), option: line.option, ...(row.warranty ? { warranty: row.warranty } : {}) }, taken.shares))
     }
     const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const customerName = String(data.customerName || '').trim().slice(0, 80) || 'Venta en tienda'

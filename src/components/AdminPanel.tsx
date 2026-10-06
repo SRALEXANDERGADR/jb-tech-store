@@ -17,14 +17,15 @@ import {
   hasOwnPrice, normalizeVariants, optionFromName, optionPrice, optionStock, parseOptions, priceRange, tracksOptionStock,
 } from '@/lib/variants'
 import type { ProductVariant } from '@/lib/variants'
+import { invoiceImage, warrantyLabel } from '@/lib/invoiceImage'
 
 // RD$1,250 con una función propia: el formato del navegador ponía «DOP» en Android.
 const money = (value: number) => `${value < 0 ? '-' : ''}RD$${Math.round(Math.abs(value) / 100).toLocaleString('en-US')}`
 const dateFmt = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
 const shortDate = (value: string) => new Intl.DateTimeFormat('es-DO', { day: '2-digit', month: 'short' }).format(new Date(value))
 
-type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: ProductVariant[]; optionStock: boolean; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; createdAt: string; deletedAt: string | null }
-type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }
+type Product = { id: number; name: string; category: string; description: string; options: string; price: number; originalPrice: number; stock: number; cost: number; image: string; variantImages: ProductVariant[]; optionStock: boolean; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; warranty: string; createdAt: string; deletedAt: string | null }
+type OrderItem = { id: number; name: string; price: number; quantity: number; cost: number; option?: string; warranty?: string; reinvCost?: number; reinvQty?: number; partnerShares?: Array<{ partnerId: number; qty: number; cost: number }> }
 type Order = { id: number; orderNumber: string; customerName: string; email: string; phone: string; address: string; items: OrderItem[]; discount: number; total: number; status: string; paymentStatus: string; notes: string; createdAt: string; deletedAt: string | null }
 type Customer = { id: number; name: string; email: string; phone: string; address: string; notes: string; createdAt: string; deletedAt: string | null }
 type ImageTrashRow = { id: number; path: string; url: string; reason: string; deletedAt: string }
@@ -41,7 +42,7 @@ type AdminData = { products: Product[]; orders: Order[]; customers: Customer[]; 
  * no cambia aunque se le cambie el nombre, y `originalName` es el nombre
  * que tenía guardado — así sus compras la siguen si se renombra. */
 type OptionDraft = { key: string; name: string; originalName: string; image: string; description: string; price: string; stock: string }
-type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; optionStock: boolean; options: OptionDraft[]; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean }
+type ProductDraft = { id?: number; name: string; category: string; description: string; price: string; originalPrice: string; stock: string; image: string; optionStock: boolean; options: OptionDraft[]; featured: boolean; isNew: boolean; bestSeller: boolean; active: boolean; warranty: string }
 type CustomerDraft = { id?: number; name: string; email: string; phone: string; address: string; notes: string }
 type PurchaseLine = { option: string; quantity: string; unitCost: string }
 type PurchaseDraft = { productId: string; notes: string; lines: PurchaseLine[]; sameCost: string; fund: FundChoice }
@@ -75,7 +76,7 @@ function emptyOption(): OptionDraft {
 }
 
 function emptyDraft(): ProductDraft {
-  return { name: '', category: CATEGORIES[0], description: '', price: '', originalPrice: '', stock: '0', image: '', optionStock: true, options: [], featured: false, isNew: false, bestSeller: false, active: true }
+  return { name: '', category: CATEGORIES[0], description: '', price: '', originalPrice: '', stock: '0', image: '', optionStock: true, options: [], featured: false, isNew: false, bestSeller: false, active: true, warranty: '' }
 }
 
 function toDraft(product: Product): ProductDraft {
@@ -84,7 +85,7 @@ function toDraft(product: Product): ProductDraft {
     price: String(product.price / 100), originalPrice: toMoneyInput(product.originalPrice), stock: String(product.stock), image: product.image,
     optionStock: Boolean(product.optionStock),
     options: normalizeVariants(product).map((entry) => ({ key: newKey(), name: entry.option, originalName: entry.option, image: entry.image, description: entry.description, price: toMoneyInput(entry.price ?? 0), stock: String(entry.stock ?? 0) })),
-    featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active,
+    featured: product.featured, isNew: product.isNew, bestSeller: product.bestSeller, active: product.active, warranty: product.warranty ?? '',
   }
 }
 
@@ -203,7 +204,7 @@ function loadJsPdf(): Promise<any> {
   return jsPdfPromise
 }
 
-function buildInvoiceDoc(JsPDF: any, order: Order) {
+function buildInvoiceDoc(JsPDF: any, order: Order, warrantyTerms = '') {
   const doc = new JsPDF({ unit: 'pt', format: 'a4' })
   const today = dateFmt(order.createdAt)
   doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(15, 23, 42)
@@ -228,6 +229,12 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
     doc.text(item.name, 40, y, { maxWidth: 330 })
     doc.text(String(item.quantity), 400, y)
     doc.text(money(item.price * item.quantity), 555, y, { align: 'right' })
+    if (item.warranty) {
+      y += 14
+      doc.setFontSize(9); doc.setTextColor(37, 99, 235)
+      doc.text(`Garantía: ${warrantyLabel(item.warranty, order.createdAt)}`, 40, y, { maxWidth: 330 })
+      doc.setFontSize(11); doc.setTextColor(30)
+    }
     y += 22
   }
   y += 8; doc.setDrawColor(220); doc.line(40, y, 555, y); y += 24
@@ -241,9 +248,20 @@ function buildInvoiceDoc(JsPDF: any, order: Order) {
   doc.text('Total', 40, y); doc.text(money(order.total), 555, y, { align: 'right' })
 
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(140)
+  if (warrantyTerms.trim() && order.items.some((item) => item.warranty)) {
+    y += 40
+    doc.setFont('helvetica', 'bold'); doc.text('Garantía', 40, y)
+    doc.setFont('helvetica', 'normal')
+    const lines = doc.splitTextToSize(warrantyTerms.trim(), 515)
+    doc.text(lines, 40, y + 14)
+    y += 14 + lines.length * 11
+  }
   doc.text('Gracias por comprar en JB Tech Store.', 40, y + 40)
   return doc
 }
+
+// Garantías más usadas (botones rápidos en el formulario del producto).
+const WARRANTY_CHOICES = ['Sin garantía', '7 días', '15 días', '30 días', '3 meses', '6 meses', '1 año']
 
 const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label: string; type?: 'textarea' | 'select'; options?: Array<{ value: string; label: string }>; showIf?: (draft: Record<string, string>) => boolean }> }> = [
   { title: 'Marca', fields: [
@@ -288,6 +306,9 @@ const CONTENT_GROUPS: Array<{ title: string; fields: Array<{ key: string; label:
     { key: 'schedule', label: 'Horario' },
     { key: 'paymentMethods', label: 'Métodos de pago (sepáralos con coma, ej.: Efectivo, Transferencia, Tarjeta). Déjalo vacío para no mostrarlos.' },
     { key: 'notificationEmail', label: 'Correos para avisos de pedidos (opcional; si son varios, sepáralos con coma)' },
+  ] },
+  { title: 'Factura y garantía', fields: [
+    { key: 'warrantyTerms', label: 'Condiciones de la garantía (salen en la factura cuando algún producto tiene garantía)', type: 'textarea' },
   ] },
   { title: 'Navegación y otros textos', fields: [
     { key: 'navShop', label: 'Menú: Tienda' },
@@ -761,6 +782,7 @@ export function AdminPanel() {
         isNew: draft.isNew,
         bestSeller: draft.bestSeller,
         active: draft.active,
+        warranty: draft.warranty,
       } })
       if (!draft.id) createdId = Number(id)
       setEditing(null)
@@ -894,21 +916,28 @@ export function AdminPanel() {
   async function handleDownloadInvoice(order: Order) {
     await withBusy(async () => {
       const JsPDF = await loadJsPdf()
-      buildInvoiceDoc(JsPDF, order).save(`Factura-${order.orderNumber}.pdf`)
+      buildInvoiceDoc(JsPDF, order, data?.content.warrantyTerms ?? '').save(`Factura-${order.orderNumber}.pdf`)
     })
   }
 
+  // Compartir la factura (WhatsApp…) va en IMAGEN, con los colores y el logo
+  // de la tienda. El PDF queda en «Descargar factura».
   async function handleShareInvoice(order: Order) {
     await withBusy(async () => {
-      const JsPDF = await loadJsPdf()
-      const doc = buildInvoiceDoc(JsPDF, order)
-      const file = new File([doc.output('blob')], `Factura-${order.orderNumber}.pdf`, { type: 'application/pdf' })
+      const blob = await invoiceImage({ ...order, warrantyTerms: data?.content.warrantyTerms ?? '', whatsapp: data?.content.whatsapp ?? '' })
+      const file = new File([blob], `Factura-${order.orderNumber}.png`, { type: 'image/png' })
       const nav = navigator as any
+      const download = () => {
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url; link.download = file.name; link.click()
+        setTimeout(() => URL.revokeObjectURL(url), 2000)
+      }
       if (nav.canShare && nav.canShare({ files: [file] })) {
         try { await nav.share({ files: [file], title: `Factura ${order.orderNumber}` }) }
-        catch (err) { if ((err as Error)?.name !== 'AbortError') doc.save(file.name) }
+        catch (err) { if ((err as Error)?.name !== 'AbortError') download() }
       } else {
-        doc.save(file.name)
+        download()
       }
     })
   }
@@ -1429,7 +1458,7 @@ export function AdminPanel() {
                   <div className="admin-order-actions">
                     <button className="icon-button" title="Editar pedido" onClick={() => { setError(''); setEditingOrder({ id: order.id, customerName: order.customerName, email: order.email, phone: order.phone, address: order.address, notes: order.notes, items: order.items.map((item) => ({ ...item, option: item.option ?? optionFromName(item.name) })), discount: order.discount }) }}><Pencil size={15} /></button>
                     <button className="icon-button" title="Descargar factura (PDF)" disabled={busy} onClick={() => handleDownloadInvoice(order)}><Download size={15} /></button>
-                    <button className="icon-button" title="Compartir factura" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
+                    <button className="icon-button" title="Compartir factura en imagen (WhatsApp)" disabled={busy} onClick={() => handleShareInvoice(order)}><Share2 size={15} /></button>
                     <button className="icon-button" title="Enviar a la papelera" onClick={() => { if (window.confirm(order.status === 'Cancelado' ? '¿Enviar este pedido a la papelera?' : `¿Enviar este pedido a la papelera?\n\nSus ${order.items.reduce((sum, item) => sum + item.quantity, 0)} unidades vuelven al inventario y deja de contar en Finanzas. Si lo restauras desde la Papelera, se vuelven a sacar.`)) withBusy(() => deleteOrder({ data: order.id })) }}><Trash2 size={15} /></button>
                   </div>
                 </div>
@@ -1587,6 +1616,9 @@ export function AdminPanel() {
               <label>Precio anterior (opcional)<input type="number" inputMode="decimal" min={0} step="0.01" value={editing.originalPrice} onChange={(event) => setEditing((current) => current && { ...current, originalPrice: event.target.value })} placeholder="Para mostrar oferta" /></label>
             </div>
             <p className="content-hint">Si las opciones de abajo tienen un precio distinto, se lo pones a cada una. Las que no tengan precio propio usan este.</p>
+            <label>Garantía<input value={editing.warranty} maxLength={60} onChange={(event) => setEditing((current) => current && { ...current, warranty: event.target.value })} placeholder="Ej. 30 días (vacío = sin garantía)" /></label>
+            <div className="warranty-chips">{WARRANTY_CHOICES.map((choice) => <button type="button" key={choice} className={(editing.warranty || 'Sin garantía') === choice ? 'active' : ''} onClick={() => setEditing((current) => current && { ...current, warranty: choice === 'Sin garantía' ? '' : choice })}>{choice}</button>)}</div>
+            <p className="content-hint">Sale en la tienda y en la factura de cada venta, con la fecha en que vence. En cada pedido se puede cambiar.</p>
           </fieldset>
 
           <fieldset className="form-section">
@@ -1682,6 +1714,7 @@ export function AdminPanel() {
               <input type="number" min={1} value={item.quantity} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, quantity: Number(event.target.value) } : row) })} />
               <input type="number" min={0} step="0.01" value={item.price / 100} onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, price: Math.round(Number(event.target.value) * 100) } : row) })} />
               <button type="button" className="icon-button" disabled={editingOrder.items.length <= 1} onClick={() => setEditingOrder((current) => current && { ...current, items: current.items.filter((_, rowIndex) => rowIndex !== index) })}><X size={14} /></button>
+              <input className="order-edit-warranty" value={item.warranty ?? ''} maxLength={60} placeholder="Garantía (ej. 30 días · vacío = sin garantía)" aria-label="Garantía" onChange={(event) => setEditingOrder((current) => current && { ...current, items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, warranty: event.target.value } : row) })} />
             </div>
           ))}
           {(() => {

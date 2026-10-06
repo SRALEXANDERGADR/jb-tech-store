@@ -1126,3 +1126,11 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
   font-weight: 700; font-size: 13px; cursor: pointer;
 }
 .pd-share:active { transform: scale(.97); }
+
+/* ─── Garantía (formulario del producto y del pedido) ─── */
+.warranty-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -2px; }
+.warranty-chips button { border: 1px solid rgba(255,255,255,0.14); background: var(--navy-900); color: var(--ink-dim); border-radius: 999px; padding: 6px 11px; font-size: 12.5px; font-weight: 700; }
+.warranty-chips button.active { background: rgba(96,165,250,0.18); border-color: var(--blue-500); color: var(--blue-400); }
+.order-edit-item .order-edit-warranty { grid-column: 1 / -1; font-size: 13px; }
+.tag-warranty { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: rgba(96,165,250,0.14); color: var(--blue-400); }
+.my-order-warranty { display: block; color: var(--blue-400); font-size: 11.5px; font-weight: 600; margin-top: 2px; }

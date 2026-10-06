@@ -26,6 +26,7 @@ type Product = {
   featured: boolean
   isNew: boolean
   bestSeller: boolean
+  warranty?: string
 }
 type Props = { data: { products: Product[]; content: Record<string, string> }; initialProductId?: number }
 
@@ -104,7 +105,7 @@ function MyOrdersModal({ list, loading, error, busy, onReload, onFix, onCancel, 
                   {order.items.map((item, index) => (
                     <li key={index}>
                       {item.image ? <img src={item.image} alt="" /> : <span className="my-order-noimg"><Package size={18} /></span>}
-                      <span>{item.quantity} × {item.name}</span>
+                      <span>{item.quantity} × {item.name}{item.warranty && <small className="my-order-warranty">Garantía: {item.warranty}</small>}</span>
                       <b>{money(item.price * item.quantity)}</b>
                     </li>
                   ))}
@@ -541,6 +542,7 @@ function ProductSheet({ product, initialOption, initialIndex, copy, cartCount, o
                 <span className="pd-tag-cat">{product.category}</span>
                 {product.bestSeller && <span className="tag-hot"><Flame size={11} />Más vendido</span>}
                 {product.isNew && <span className="tag-new">Nuevo</span>}
+                {product.warranty && <span className="tag-warranty"><ShieldCheck size={11} />Garantía {product.warranty}</span>}
                 {soldOut ? <span className="tag-out">{tracking && product.stock > 0 ? 'Esta opción está agotada' : 'Agotado'}</span> : available <= 5 ? <span className="tag-low">¡Solo quedan {available}!</span> : <span className="tag-ok"><Check size={11} />Disponible</span>}
               </div>
 
