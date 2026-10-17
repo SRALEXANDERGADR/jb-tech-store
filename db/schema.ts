@@ -180,11 +180,12 @@ export const purchases = pgTable('purchases', {
 export const expenses = pgTable('expenses', {
   id: serial('id').primaryKey(),
   type: text('type').notNull().default('negocio'), // 'negocio' | 'personal' | 'socio' (pago a un socio)
-  partnerId: integer('partner_id'), // pago a un socio, o retiro personal que en parte salió del dinero de un socio
+  partnerId: integer('partner_id'), // pago a un socio, o retiro personal que en parte salió de tu parte con ese socio
   description: text('description').notNull(),
   amount: integer('amount').notNull(), // centavos
-  // Solo en un retiro personal: cuánto de `amount` salió del dinero del socio
-  // `partnerId` porque «Puedes retirar» no alcanzaba (centavos; 0 = nada).
+  // Solo en un retiro personal: cuánto de `amount` salió de lo que a Yeilin le
+  // toca con el socio `partnerId` («Te toca a ti»), porque lo suyo no
+  // alcanzaba (centavos; 0 = nada). El dinero del socio no se toca.
   partnerAmount: integer('partner_amount').notNull().default(0),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 })

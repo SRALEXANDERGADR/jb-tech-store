@@ -1281,9 +1281,10 @@ export const removePartner = createServerFn({ method: 'POST' }).inputValidator((
 // repartir); 'personal' se resta de lo que ya le corresponde a Yeilin, sin
 // tocar la ganancia del negocio; 'socio' sale de la caja de ese socio
 // (`partnerId`): es dinero que se le entregó.
-// Un retiro personal más grande que «Puedes retirar» puede tomar lo que falta
-// del dinero de un socio: `partnerAmount` (de `partnerId`). Esa parte se resta
-// de la caja del socio, no de «Puedes retirar». El panel calcula cuánto falta.
+// Un retiro personal: «Puedes retirar» es lo de Yeilin + su parte de la
+// ganancia con los socios («Te toca a ti»). Primero sale de lo suyo; lo que no
+// alcance sale de su parte con un socio: `partnerAmount` (de `partnerId`), que
+// se resta en Socios. El dinero del socio no se toca. El panel calcula el reparto.
 export const recordExpense = createServerFn({ method: 'POST' })
   .inputValidator((data: { type: 'negocio' | 'personal' | 'socio'; description: string; amount: number; partnerId?: number; partnerAmount?: number }) => data)
   .handler(async ({ data }) => {
@@ -1300,7 +1301,7 @@ export const recordExpense = createServerFn({ method: 'POST' })
       return true
     }
     const partnerAmount = data.type === 'personal' ? Math.round(Number(data.partnerAmount) || 0) : 0
-    if (partnerAmount < 0 || partnerAmount > amount) throw new Error('Lo que sale del dinero del socio no puede ser más que el retiro.')
+    if (partnerAmount < 0 || partnerAmount > amount) throw new Error('Lo que sale de tu parte con el socio no puede ser más que el retiro.')
     if (partnerAmount > 0) {
       const [partner] = await db.select({ id: partners.id }).from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
       if (!partner) throw new Error('Ese socio ya no existe.')
@@ -1311,17 +1312,17 @@ export const recordExpense = createServerFn({ method: 'POST' })
     return true
   })
 
-// Para retiros de antes: «Puedes retirar» quedó en negativo porque se sacó
-// más de lo que le tocaba a Yeilin. Pasa esa diferencia (`amount`, que calcula
-// el panel) al dinero del socio: se reparte entre los retiros personales, del
-// más nuevo al más viejo, sin pasar del monto de cada uno.
+// Para retiros de antes de la regla: ya usaron parte de lo que a Yeilin le
+// toca con un socio, pero no quedó anotado. Anota esa parte (`amount`, que
+// calcula el panel) en los retiros personales, del más nuevo al más viejo,
+// sin pasar del monto de cada uno, para que se reste en Socios.
 export const coverWithdrawalsWithPartner = createServerFn({ method: 'POST' })
   .inputValidator((data: { partnerId: number; amount: number }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     await ensureSchema()
     let left = Math.round(Number(data.amount) || 0)
-    if (left <= 0) throw new Error('No hay nada que pasar al dinero del socio.')
+    if (left <= 0) throw new Error('No hay nada que anotar en Socios.')
     const [partner] = await db.select({ id: partners.id }).from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
     if (!partner) throw new Error('Ese socio ya no existe.')
     const rows = await db.select().from(expenses).where(eq(expenses.type, 'personal')).orderBy(desc(expenses.createdAt), desc(expenses.id))
@@ -1337,7 +1338,7 @@ export const coverWithdrawalsWithPartner = createServerFn({ method: 'POST' })
       left -= take
       covered += take
     }
-    if (!covered) throw new Error('No hay retiros personales que se puedan pasar al dinero del socio.')
+    if (!covered) throw new Error('No hay retiros personales donde anotarlo.')
     return { covered }
   })
 

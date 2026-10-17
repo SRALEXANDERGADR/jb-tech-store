@@ -104,13 +104,13 @@ function emptyExpenseDraft(): ExpenseDraft {
   return { type: 'negocio', description: '', amount: '', partnerId: '' }
 }
 
-/** Cómo se reparte un retiro personal: `own` sale de «Puedes retirar» y
- * `fromPartner` del dinero del socio `partnerId`. `short` > 0 = no alcanza ni
- * con lo del socio: no se deja guardar. */
-type ExpenseSplit = { own: number; fromPartner: number; short: number; total: number; partnerId: number; partnerName: string; partnerCaja: number }
+/** Cómo se reparte un retiro personal: `own` sale de lo tuyo y `fromPartner`
+ * de tu parte de la ganancia con el socio `partnerId` («Te toca a ti»).
+ * `short` > 0 = pide más de lo que hay en «Puedes retirar»: no se deja guardar. */
+type ExpenseSplit = { own: number; fromPartner: number; short: number; total: number; partnerId: number; partnerName: string; partnerLeft: number; blocked: string }
 
-/** Parte de un retiro personal que salió del dinero de un socio (porque
- * «Puedes retirar» no alcanzaba). 0 en cualquier otro gasto. */
+/** Parte de un retiro personal que salió de tu parte con un socio («Te toca a
+ * ti»), porque lo tuyo no alcanzaba. 0 en cualquier otro gasto. */
 function fromPartner(expense: Expense) {
   if (expense.type !== 'personal' || !expense.partnerId) return 0
   return Math.min(expense.amount, Math.max(0, expense.partnerAmount ?? 0))
@@ -987,6 +987,7 @@ export function AdminPanel() {
     event.preventDefault()
     if (!editingExpense) return
     if (split && split.short > 0) { setError(`No te alcanza: te faltan ${money(split.short)}. Pon una cantidad que sí tengas.`); return }
+    if (split?.blocked) { setError(split.blocked); return }
     const covered = split && split.fromPartner > 0 ? split : null
     await withBusy(async () => {
       if (editingExpense.type === 'socio' && !editingExpense.partnerId) throw new Error('Elige a cuál socio le pagaste.')
@@ -998,7 +999,7 @@ export function AdminPanel() {
         partnerAmount: covered ? covered.fromPartner : undefined,
       } })
       setEditingExpense(null)
-      if (covered) setNotice(`Listo. Salieron ${money(covered.own)} de lo tuyo y ${money(covered.fromPartner)} de ${covered.partnerName}.`)
+      if (covered) setNotice(`Listo. Salieron ${money(covered.own)} de lo tuyo y ${money(covered.fromPartner)} de la parte de socios.`)
     })
   }
 
@@ -1022,13 +1023,13 @@ export function AdminPanel() {
     })
   }
 
-  // Retiros de antes que dejaron «Puedes retirar» en negativo: esa diferencia
-  // pasa al dinero del socio (hasta lo que él tenga).
+  // Retiros de antes de la regla: lo que ya usaron de tu parte con el socio
+  // («Te toca a ti») se anota para que se reste en Socios.
   function confirmCoverWithPartner(partner: Partner, amount: number) {
-    if (!window.confirm(`¿Restar ${money(amount)} del dinero de ${partner.name}?\n\n«Puedes retirar» sube ${money(amount)} y lo de ${partner.name} en Socios baja lo mismo.`)) return
+    if (!window.confirm(`¿Restar ${money(amount)} de la parte de socios en Socios?\n\nEs lo que tus retiros ya usaron de esa parte. «Puedes retirar» no cambia y el dinero de ${partner.name} no se toca.`)) return
     withBusy(async () => {
       const result = await coverWithdrawalsWithPartner({ data: { partnerId: partner.id, amount } })
-      setNotice(`Listo. Se restaron ${money(result.covered)} del dinero de ${partner.name}.`)
+      setNotice(`Listo. En Socios se restaron ${money(result.covered)} de la parte de socios.`)
     })
   }
 
@@ -1138,13 +1139,14 @@ export function AdminPanel() {
     const gastado = lots.reduce((sum, purchase) => sum + purchase.totalCost, 0)
     const mercancia = lots.reduce((sum, purchase) => sum + purchase.remainingQuantity * purchase.unitCost, 0)
     const pagado = data.expenses.filter((expense) => expense.type === 'socio' && expense.partnerId === partner.id).reduce((sum, expense) => sum + expense.amount, 0)
-    // Lo que Yeilin tomó de su dinero en retiros que no cabían en «Puedes retirar».
-    const tomado = data.expenses.filter((expense) => expense.partnerId === partner.id).reduce((sum, expense) => sum + fromPartner(expense), 0)
     // Caja del socio: lo que invirtió − lo que se compró con eso + lo que
-    // vuelve al vender + su parte de la ganancia − lo que ya se le entregó
-    // − lo que tomaste tú de su dinero en tus retiros.
-    const caja = partner.capital - gastado + recuperado + parteSocio - pagado - tomado
-    return { partner, ventas, recuperado, ganancia, parteSocio, parteDuena: ganancia - parteSocio, gastado, mercancia, pagado, tomado, caja, used: lots.length > 0 || pagado > 0 || tomado > 0 }
+    // vuelve al vender + su parte de la ganancia − lo que ya se le entregó.
+    const caja = partner.capital - gastado + recuperado + parteSocio - pagado
+    // Tu parte de la ganancia con este socio («Te toca a ti») y lo que ya
+    // sacaste de ella en retiros donde lo tuyo no alcanzó.
+    const parteDuena = ganancia - parteSocio
+    const sacado = data.expenses.filter((expense) => expense.partnerId === partner.id).reduce((sum, expense) => sum + fromPartner(expense), 0)
+    return { partner, ventas, recuperado, ganancia, parteSocio, parteDuena, sacado, restante: parteDuena - sacado, gastado, mercancia, pagado, caja, used: lots.length > 0 || pagado > 0 || sacado > 0 }
   })
   const gananciaSocios = partnerStats.reduce((sum, stat) => sum + stat.ganancia, 0)
   const parteDuenaSocios = partnerStats.reduce((sum, stat) => sum + stat.parteDuena, 0)
@@ -1160,15 +1162,12 @@ export function AdminPanel() {
   // PERSONALES sí salen solo de lo que te toca a ti.
   const gastosNegocio = data.expenses.filter((expense) => expense.type === 'negocio').reduce((sum, expense) => sum + expense.amount, 0)
   const capitalDisponible = capitalInicial - gastadoCapital + recuperadoCapital - gastosNegocio
-  // Gastos personales: solo la parte que salió de lo tuyo. Lo que salió del
-  // dinero de un socio (porque no alcanzaba) se resta de la caja de ese socio.
-  const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount - fromPartner(expense), 0)
-  const tomadoSocios = partnerStats.reduce((sum, stat) => sum + stat.tomado, 0)
-  // Lo que le toca a los socios de la ganancia (ya está fuera de «Puedes
-  // retirar»). Con un solo socio se dice su nombre.
-  const parteSocios = partnerStats.reduce((sum, stat) => sum + stat.parteSocio, 0)
-  const sociosConParte = partnerStats.filter((stat) => stat.parteSocio !== 0)
-  const sociosLabel = sociosConParte.length === 1 ? sociosConParte[0].partner.name : 'tus socios'
+  const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount, 0)
+  // De tus retiros, lo que salió de tu parte con los socios («Te toca a ti»).
+  const sacadoSocios = partnerStats.reduce((sum, stat) => sum + stat.sacado, 0)
+  // Socios con los que Yeilin tiene parte de ganancia (para decir «parte de socios»).
+  const sociosConParte = partnerStats.filter((stat) => stat.parteDuena !== 0 || stat.sacado !== 0)
+  const deCualSocio = (name: string) => (sociosConParte.length > 1 ? ` (${name})` : '')
   const reinvestPercent = Number(data.content.reinvestPercent ?? 70)
   // Solo la ganancia del negocio se reparte entre reinversión y «Para ti».
   const reinversion = Math.round((gananciaNegocio * reinvestPercent) / 100)
@@ -1176,27 +1175,31 @@ export function AdminPanel() {
   const dineroReinvertir = reinversion - gastadoReinv + recuperadoReinv
   const disponibleRetirar = paraTi + gananciaPropia + parteDuenaSocios - gastosPersonales
   const activePartners = partnerStats.filter((stat) => stat.partner.active)
-  // Retiro personal (regla acordada con Yeilin): primero sale de «Puedes
-  // retirar»; solo lo que no alcance sale del dinero de un socio (el elegido;
-  // si no, el que más tiene). Si pide más de lo que hay entre los dos, no se
-  // deja guardar y se le dice cuánto falta.
-  const partnersWithMoney = activePartners.filter((stat) => stat.caja > 0).sort((a, b) => b.caja - a.caja)
+  // «Puedes retirar» = lo tuyo + tu parte con los socios («Te toca a ti»).
+  // Regla acordada con Yeilin para sus retiros: primero sale de lo tuyo; solo
+  // lo que no alcance sale de tu parte con un socio (y se resta en Socios).
+  // Si pide más de lo que hay en «Puedes retirar», no se deja guardar y se le
+  // dice cuánto falta. El dinero del socio nunca se toca.
+  const parteSociosQueda = partnerStats.reduce((sum, stat) => sum + Math.max(0, stat.restante), 0)
+  const loTuyo = disponibleRetirar - parteSociosQueda
+  const partnersWithShare = partnerStats.filter((stat) => stat.restante > 0).sort((a, b) => b.restante - a.restante)
   const expenseSplit: ExpenseSplit | null = (() => {
     if (!editingExpense || editingExpense.type !== 'personal') return null
     const amount = cents(editingExpense.amount)
     if (amount <= 0) return null
-    const partner = partnersWithMoney.find((stat) => String(stat.partner.id) === editingExpense.partnerId) ?? partnersWithMoney[0]
-    const partnerCaja = partner?.caja ?? 0
-    const own = Math.min(amount, Math.max(0, disponibleRetirar))
-    // Si «Puedes retirar» ya estaba en negativo, eso también se descuenta.
-    const total = disponibleRetirar + partnerCaja
-    const short = Math.max(0, amount - total)
-    return { own, fromPartner: short > 0 ? 0 : amount - own, short, total, partnerId: partner?.partner.id ?? 0, partnerName: partner?.partner.name ?? '', partnerCaja }
+    const partner = partnersWithShare.find((stat) => String(stat.partner.id) === editingExpense.partnerId) ?? partnersWithShare[0]
+    const own = Math.min(amount, Math.max(0, loTuyo))
+    const short = Math.max(0, amount - disponibleRetirar)
+    const fromPartner = short > 0 ? 0 : amount - own
+    const partnerLeft = (partner?.restante ?? 0) - fromPartner
+    // Con varios socios, un retiro solo puede tomar de la parte de uno.
+    const blocked = fromPartner > 0 && partnerLeft < 0 ? `De la parte de socios (${partner?.partner.name ?? 'un socio'}) solo quedan ${money(partner?.restante ?? 0)}. Saca menos o haz dos retiros.` : ''
+    return { own, fromPartner, short, total: disponibleRetirar, partnerId: partner?.partner.id ?? 0, partnerName: partner?.partner.name ?? '', partnerLeft, blocked }
   })()
-  // Retiros de antes que dejaron «Puedes retirar» en negativo: se pueden pasar
-  // al dinero de un socio con un botón.
-  const deficitRetirar = disponibleRetirar < 0 ? -disponibleRetirar : 0
-  const coverPartner = partnersWithMoney[0]
+  // Retiros de antes de esta regla: ya usaron parte de «Te toca a ti» (lo tuyo
+  // quedó en negativo) pero en Socios no se restó. Un botón lo anota.
+  const sinAnotar = loTuyo < 0 ? -loTuyo : 0
+  const coverPartner = partnersWithShare[0]
   const fundBalance = (fund: FundChoice) => fund === 'reinversion' ? dineroReinvertir
     : fund.startsWith('socio:') ? partnerStats.find((stat) => `socio:${stat.partner.id}` === fund)?.caja ?? 0
     : capitalDisponible
@@ -1296,19 +1299,21 @@ export function AdminPanel() {
               <button type="button" onClick={() => setEditingExpense(emptyExpenseDraft())}><Plus size={20} /><span>Registrar gasto</span></button>
             </div>
 
+            {sinAnotar > 0 && coverPartner && (
+              <div className="cover-partner">
+                <p><AlertTriangle size={15} />Tus retiros ya usaron {money(Math.min(sinAnotar, coverPartner.restante))} de la parte de socios{deCualSocio(coverPartner.partner.name)}, pero en Socios no se ha restado.</p>
+                <button type="button" className="ghost-button" disabled={busy} onClick={() => confirmCoverWithPartner(coverPartner.partner, Math.min(sinAnotar, coverPartner.restante))}>Restarlo en Socios</button>
+              </div>
+            )}
             <div className="money-hero">
               <div className="money-card"><span>Dinero del negocio</span><strong>{money(capitalDisponible)}</strong><small>Lo que hay para comprar mercancía</small></div>
               <div className="money-card"><span>Dinero para reinvertir</span><strong>{money(dineroReinvertir)}</strong><small>Tu {reinvestPercent}% de la ganancia, para comprar más mercancía</small></div>
-              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Ganancia {money(gananciaBruta)}{reinversion !== 0 ? ` − ${money(reinversion)} para reinvertir` : ''}{parteSocios !== 0 ? ` − ${money(parteSocios)} de ${sociosLabel}` : ''}{gastosPersonales !== 0 ? ` − ${money(gastosPersonales)} de tus gastos` : ''}.{parteSocios !== 0 ? ` Lo de ${sociosLabel} ya está restado: está en Socios.` : ''}{tomadoSocios > 0 ? ` ${money(tomadoSocios)} de tus retiros salieron de lo de tu socio.` : ''}</small></div>
+              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>{sociosConParte.length > 0
+                ? <>Lo tuyo {money(loTuyo)} + parte de socios {money(parteSociosQueda)}. Al sacar, primero sale de lo tuyo.</>
+                : <>Tu {100 - reinvestPercent}% de la ganancia{gananciaPropia !== 0 ? ', más lo que ganaste con el dinero para reinvertir,' : ''} menos tus gastos personales</>}</small></div>
               <div className="money-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong><small>De las ventas ya pagadas. Se reparte: {money(reinversion)} para reinvertir{gananciaSocios !== 0 ? `, ${money(gananciaSocios - parteDuenaSocios)} para tus socios` : ''} y {money(paraTi + gananciaPropia + parteDuenaSocios)} para ti</small></div>
               <div className="money-card"><span>Mercancía en existencia</span><strong>{money(inventoryValue)}</strong><small>Lo que costó lo que todavía no se ha vendido</small></div>
             </div>
-            {deficitRetirar > 0 && coverPartner && (
-              <div className="cover-partner">
-                <p><AlertTriangle size={15} />«Puedes retirar» está en {money(disponibleRetirar)} porque sacaste más de lo tuyo. Si eso salió de lo de {coverPartner.partner.name}, réstalo de su dinero.</p>
-                <button type="button" className="ghost-button" disabled={busy} onClick={() => confirmCoverWithPartner(coverPartner.partner, Math.min(deficitRetirar, coverPartner.caja))}>Restar {money(Math.min(deficitRetirar, coverPartner.caja))} de {coverPartner.partner.name}</button>
-              </div>
-            )}
             {porCobrar > 0 && <p className="admin-hint"><AlertTriangle size={14} />Te deben {money(porCobrar)} de {porCobrarOrders.length} {porCobrarOrders.length === 1 ? 'pedido' : 'pedidos'} sin pagar. Cuando los marques «Pagado» se suman aquí.</p>}
             {uncostedProducts.length > 0 && (
               <p className="form-error">
@@ -1345,12 +1350,12 @@ export function AdminPanel() {
                 <div className="admin-card"><span>Ganancia de tu dinero para reinvertir</span><strong>{money(gananciaPropia)}</strong></div>
                 {partnerStats.length > 0 && <div className="admin-card"><span>Tu parte de la ganancia de socios</span><strong>{money(parteDuenaSocios)}</strong></div>}
                 <div className="admin-card"><span>Gastos personales</span><strong>{money(gastosPersonales)}</strong></div>
-                {tomadoSocios > 0 && <div className="admin-card"><span>Retiros que salieron de lo del socio</span><strong>{money(tomadoSocios)}</strong></div>}
+                {sacadoSocios > 0 && <div className="admin-card"><span>De tus retiros, salió de la parte de socios</span><strong>{money(sacadoSocios)}</strong></div>}
               </div>
               <p className="admin-hint">Dinero del negocio = capital inicial − lo que compraste con él + lo que vuelve al vender esa mercancía − gastos del negocio.</p>
               <p className="admin-hint">Dinero para reinvertir = el {reinvestPercent}% de la ganancia del negocio − lo que compraste con él + lo que vuelve al vender esa mercancía. Ese dinero es tuyo: lo que ganes con la mercancía que compres con él es 100% tuyo y va directo a «Puedes retirar», sin repartirse.</p>
               <p className="admin-hint">Puedes retirar = el {100 - reinvestPercent}% de la ganancia del negocio + la ganancia de tu dinero para reinvertir + tu parte de lo que ganó la mercancía de tus socios − tus gastos personales. Solo cuentan los pedidos «Pagado» que no estén cancelados.</p>
-              <p className="admin-hint">Al sacar dinero, primero sale de «Puedes retirar». Si no alcanza, lo que falta sale del dinero de tu socio y se le resta en Socios. Si pides más de lo que hay entre los dos, no te deja y te dice cuánto falta.</p>
+              <p className="admin-hint">«Puedes retirar» es lo tuyo más la parte de socios («Te toca a ti» en Socios). Al sacar dinero, primero sale de lo tuyo; si no alcanza, lo que falta sale de la parte de socios y se resta en Socios. No es mitad y mitad. El dinero de tu socio no se toca. Si pides más de lo que hay en «Puedes retirar», no te deja y te dice cuánto falta.</p>
               {partnerStats.length > 0 && <p className="admin-hint">Mercancía de un socio: lo que costó vuelve a la caja de ese socio, y la ganancia se divide entre él y tú según su %. No pasa por el dinero del negocio ni por la reinversión.</p>}
             </Collapsible>
 
@@ -1374,7 +1379,7 @@ export function AdminPanel() {
             {financeView === 'gastos' && (
               <div className="admin-table">
                 {data.expenses.slice(0, expenseLimit).map((expense) => <div className="admin-row" key={expense.id}>
-                  <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}{fromPartner(expense) > 0 ? ` · ${money(fromPartner(expense))} del dinero de ${partnerNames.get(expense.partnerId ?? 0) ?? 'un socio'}` : ''}</span></div>
+                  <div><strong>{expense.description}</strong><span>{dateFmt(expense.createdAt)}{fromPartner(expense) > 0 ? ` · ${money(fromPartner(expense))} de la parte de socios${deCualSocio(partnerNames.get(expense.partnerId ?? 0) ?? 'un socio')}` : ''}</span></div>
                   <span className={`status-pill status-${expense.type}`}>{expense.type === 'negocio' ? 'Negocio' : expense.type === 'socio' ? `Socio: ${partnerNames.get(expense.partnerId ?? 0) ?? '—'}` : 'Personal'}</span>
                   <strong>{money(expense.amount)}</strong>
                   <div className="admin-row-actions">
@@ -1417,12 +1422,11 @@ export function AdminPanel() {
                   <div className="admin-card"><span>En mercancía</span><strong>{money(stat.mercancia)}</strong></div>
                   <div className="admin-card"><span>Ganancia de su mercancía</span><strong>{money(stat.ganancia)}</strong></div>
                   <div className="admin-card"><span>Le toca a {stat.partner.name} ({stat.partner.percent}%)</span><strong>{money(stat.parteSocio)}</strong></div>
-                  <div className="admin-card"><span>Te toca a ti ({100 - stat.partner.percent}%)</span><strong>{money(stat.parteDuena)}</strong></div>
+                  <div className="admin-card"><span>Te toca a ti ({100 - stat.partner.percent}%)</span><strong>{money(stat.restante)}</strong>{stat.sacado > 0 && <small className="card-note">Ganaste {money(stat.parteDuena)} · ya sacaste {money(stat.sacado)}</small>}</div>
                   <div className="admin-card"><span>Ya se le entregó</span><strong>{money(stat.pagado)}</strong></div>
-                  {stat.tomado > 0 && <div className="admin-card"><span>Sacaste tú de su dinero</span><strong>{money(stat.tomado)}</strong></div>}
                 </div>
-                <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}){stat.tomado > 0 ? ` − lo que sacaste tú cuando lo tuyo no alcanzó (${money(stat.tomado)})` : ''}. Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
-                <p className="admin-hint">Si sacas más de lo que tienes en «Puedes retirar», lo que falta baja de «Su dinero ahora». «Le toca a {stat.partner.name}» es su parte de la ganancia: ese no cambia.</p>
+                <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}). Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
+                <p className="admin-hint">«Te toca a ti» es la parte de socios que está sumada en tu «Puedes retirar». Si en Finanzas sacas más de lo tuyo, lo que falta se resta de aquí. El dinero de {stat.partner.name} («Su dinero ahora») no se toca.</p>
                 <div className="partner-card-buttons">
                   <button type="button" className="ghost-button" onClick={() => { openPurchase(); setEditingPurchase((current) => current && { ...current, fund: `socio:${stat.partner.id}` }) }}><ShoppingBag size={15} />Comprar con su dinero</button>
                   <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingExpense({ type: 'socio', description: `Pago a ${stat.partner.name}`, amount: '', partnerId: String(stat.partner.id) }) }}><Wallet size={15} />Registrar pago</button>
@@ -1433,7 +1437,7 @@ export function AdminPanel() {
               <Collapsible title="Socios quitados">
                 {partnerStats.filter((stat) => !stat.partner.active).map((stat) => (
                   <div className="admin-row" key={stat.partner.id}>
-                    <div><strong>{stat.partner.name}</strong><span>Ganancia {money(stat.ganancia)} · le tocó {money(stat.parteSocio)} · se le entregó {money(stat.pagado)}{stat.tomado > 0 ? ` · sacaste tú ${money(stat.tomado)}` : ''}</span></div>
+                    <div><strong>{stat.partner.name}</strong><span>Ganancia {money(stat.ganancia)} · le tocó {money(stat.parteSocio)} · se le entregó {money(stat.pagado)}{stat.sacado > 0 ? ` · sacaste de tu parte ${money(stat.sacado)}` : ''}</span></div>
                     <strong>{money(stat.caja)}</strong>
                     <div className="admin-row-actions">
                       <button type="button" title="Volver a agregar" onClick={() => { setError(''); setEditingPartner({ id: stat.partner.id, name: stat.partner.name, capital: toMoneyInput(stat.partner.capital), percent: String(stat.partner.percent), notes: stat.partner.notes }) }}><RotateCcw size={15} /></button>
@@ -1999,18 +2003,20 @@ export function AdminPanel() {
           </label>}
           <label>Descripción<input required value={editingExpense.description} onChange={(event) => setEditingExpense((current) => current && { ...current, description: event.target.value })} placeholder="Ej. transporte, comida, retiro..." /></label>
           <label>Monto (RD$)<input required type="number" min={0} step="0.01" value={editingExpense.amount} onChange={(event) => setEditingExpense((current) => current && { ...current, amount: event.target.value })} /></label>
-          {editingExpense.type === 'personal' && <p className="content-hint">En «Puedes retirar» tienes {money(disponibleRetirar)}{expenseSplit?.partnerName ? ` y ${expenseSplit.partnerName} tiene ${money(expenseSplit.partnerCaja)}` : partnersWithMoney[0] ? ` y ${partnersWithMoney[0].partner.name} tiene ${money(partnersWithMoney[0].caja)}` : ''}. Primero sale de lo tuyo.</p>}
+          {editingExpense.type === 'personal' && <p className="content-hint">En «Puedes retirar» tienes {money(disponibleRetirar)}{sociosConParte.length > 0 ? ` (lo tuyo ${money(loTuyo)} + parte de socios ${money(parteSociosQueda)})` : ''}. Primero sale de lo tuyo.</p>}
           {expenseSplit && expenseSplit.short === 0 && expenseSplit.fromPartner > 0 && <>
-            {partnersWithMoney.length > 1 && <label>¿De cuál socio sale lo que falta?
+            {partnersWithShare.length > 1 && <label>¿De la parte de cuál socio?
               <select value={String(expenseSplit.partnerId)} onChange={(event) => setEditingExpense((current) => current && { ...current, partnerId: event.target.value })}>
-                {partnersWithMoney.map((stat) => <option key={stat.partner.id} value={stat.partner.id}>{stat.partner.name} (tiene {money(stat.caja)})</option>)}
+                {partnersWithShare.map((stat) => <option key={stat.partner.id} value={stat.partner.id}>{stat.partner.name} (quedan {money(stat.restante)})</option>)}
               </select>
             </label>}
-            <p className="order-edit-total">De lo tuyo salen {money(expenseSplit.own)} y de {expenseSplit.partnerName} <strong>{money(expenseSplit.fromPartner)}</strong>. A {expenseSplit.partnerName} le quedan {money(expenseSplit.partnerCaja - expenseSplit.fromPartner)}.</p>
+            {expenseSplit.blocked
+              ? <p className="form-error">{expenseSplit.blocked}</p>
+              : <p className="order-edit-total">De lo tuyo salen {money(expenseSplit.own)} y de la parte de socios{deCualSocio(expenseSplit.partnerName)} <strong>{money(expenseSplit.fromPartner)}</strong>. En la parte de socios quedan {money(expenseSplit.partnerLeft)}.</p>}
           </>}
-          {expenseSplit && expenseSplit.short > 0 && <p className="form-error">No te alcanza. {expenseSplit.partnerName ? `Entre lo tuyo y lo de ${expenseSplit.partnerName} hay ${money(Math.max(0, expenseSplit.total))}` : `En «Puedes retirar» hay ${money(Math.max(0, expenseSplit.total))}`}: te faltan {money(expenseSplit.short)}. Pon una cantidad que sí tengas.</p>}
+          {expenseSplit && expenseSplit.short > 0 && <p className="form-error">No te alcanza. En «Puedes retirar» hay {money(Math.max(0, expenseSplit.total))}: te faltan {money(expenseSplit.short)}. Pon una cantidad que sí tengas.</p>}
           {error && <p className="form-error">{error}</p>}
-          <button className="primary-button full" disabled={busy || Boolean(expenseSplit && expenseSplit.short > 0)}>{busy ? 'Guardando…' : editingExpense.type === 'socio' ? 'Registrar pago' : 'Registrar gasto'}</button>
+          <button className="primary-button full" disabled={busy || Boolean(expenseSplit && (expenseSplit.short > 0 || expenseSplit.blocked))}>{busy ? 'Guardando…' : editingExpense.type === 'socio' ? 'Registrar pago' : 'Registrar gasto'}</button>
         </form>
       </div></div>}
 

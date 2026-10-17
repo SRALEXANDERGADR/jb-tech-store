@@ -779,11 +779,12 @@ footer { background: var(--navy-950); border-top: 1px solid rgba(255,255,255,0.0
 .partner-card .admin-hint { margin: 0; }
 .partner-card-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .partner-card-buttons .ghost-button { margin: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding-left: 8px; padding-right: 8px; }
-/* «Puedes retirar» en negativo: pasar lo retirado de más al dinero de un socio. */
+/* Retiros de antes que ya usaron tu parte con un socio: anotarlo en Socios. */
 .cover-partner { display: grid; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border-radius: var(--radius-md); background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.35); }
 .cover-partner p { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--ink); font-size: 13.5px; line-height: 1.45; }
 .cover-partner p svg { flex: none; margin-top: 2px; color: #fbbf24; }
 .cover-partner .ghost-button { margin: 0; justify-self: start; }
+.admin-card .card-note { display: block; margin-top: 4px; color: var(--ink-dim); font-size: 11.5px; font-weight: 600; line-height: 1.35; text-transform: none; letter-spacing: 0; }
 
 .admin-order { background: var(--navy-800); border: 1px solid rgba(255,255,255,0.06); border-radius: var(--radius-md); padding: 14px; }
 .admin-order-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
