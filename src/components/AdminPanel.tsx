@@ -1164,6 +1164,11 @@ export function AdminPanel() {
   // dinero de un socio (porque no alcanzaba) se resta de la caja de ese socio.
   const gastosPersonales = data.expenses.filter((expense) => expense.type === 'personal').reduce((sum, expense) => sum + expense.amount - fromPartner(expense), 0)
   const tomadoSocios = partnerStats.reduce((sum, stat) => sum + stat.tomado, 0)
+  // Lo que le toca a los socios de la ganancia (ya está fuera de «Puedes
+  // retirar»). Con un solo socio se dice su nombre.
+  const parteSocios = partnerStats.reduce((sum, stat) => sum + stat.parteSocio, 0)
+  const sociosConParte = partnerStats.filter((stat) => stat.parteSocio !== 0)
+  const sociosLabel = sociosConParte.length === 1 ? sociosConParte[0].partner.name : 'tus socios'
   const reinvestPercent = Number(data.content.reinvestPercent ?? 70)
   // Solo la ganancia del negocio se reparte entre reinversión y «Para ti».
   const reinversion = Math.round((gananciaNegocio * reinvestPercent) / 100)
@@ -1294,7 +1299,7 @@ export function AdminPanel() {
             <div className="money-hero">
               <div className="money-card"><span>Dinero del negocio</span><strong>{money(capitalDisponible)}</strong><small>Lo que hay para comprar mercancía</small></div>
               <div className="money-card"><span>Dinero para reinvertir</span><strong>{money(dineroReinvertir)}</strong><small>Tu {reinvestPercent}% de la ganancia, para comprar más mercancía</small></div>
-              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Tu {100 - reinvestPercent}% de la ganancia{gananciaPropia !== 0 ? ', más lo que ganaste con el dinero para reinvertir,' : ''}{parteDuenaSocios !== 0 ? ' más tu parte de lo que ganaron tus socios,' : ''} menos tus gastos personales{tomadoSocios > 0 ? `. ${money(tomadoSocios)} de tus retiros salieron de lo de tu socio` : ''}</small></div>
+              <div className="money-card money-card-accent"><span>Puedes retirar</span><strong>{money(disponibleRetirar)}</strong><small>Ganancia {money(gananciaBruta)}{reinversion !== 0 ? ` − ${money(reinversion)} para reinvertir` : ''}{parteSocios !== 0 ? ` − ${money(parteSocios)} de ${sociosLabel}` : ''}{gastosPersonales !== 0 ? ` − ${money(gastosPersonales)} de tus gastos` : ''}.{parteSocios !== 0 ? ` Lo de ${sociosLabel} ya está restado: está en Socios.` : ''}{tomadoSocios > 0 ? ` ${money(tomadoSocios)} de tus retiros salieron de lo de tu socio.` : ''}</small></div>
               <div className="money-card"><span>Ganancia</span><strong>{money(gananciaBruta)}</strong><small>De las ventas ya pagadas. Se reparte: {money(reinversion)} para reinvertir{gananciaSocios !== 0 ? `, ${money(gananciaSocios - parteDuenaSocios)} para tus socios` : ''} y {money(paraTi + gananciaPropia + parteDuenaSocios)} para ti</small></div>
               <div className="money-card"><span>Mercancía en existencia</span><strong>{money(inventoryValue)}</strong><small>Lo que costó lo que todavía no se ha vendido</small></div>
             </div>
@@ -1417,6 +1422,7 @@ export function AdminPanel() {
                   {stat.tomado > 0 && <div className="admin-card"><span>Sacaste tú de su dinero</span><strong>{money(stat.tomado)}</strong></div>}
                 </div>
                 <p className="admin-hint">Su dinero ahora = lo que invirtió ({money(stat.partner.capital)}) − lo que se compró con eso ({money(stat.gastado)}) + lo que volvió al vender ({money(stat.recuperado)}) + su parte de la ganancia ({money(stat.parteSocio)}) − lo que ya se le entregó ({money(stat.pagado)}){stat.tomado > 0 ? ` − lo que sacaste tú cuando lo tuyo no alcanzó (${money(stat.tomado)})` : ''}. Si todo se le devolviera hoy, serían {money(stat.caja + stat.mercancia)} contando la mercancía que queda.</p>
+                <p className="admin-hint">Si sacas más de lo que tienes en «Puedes retirar», lo que falta baja de «Su dinero ahora». «Le toca a {stat.partner.name}» es su parte de la ganancia: ese no cambia.</p>
                 <div className="partner-card-buttons">
                   <button type="button" className="ghost-button" onClick={() => { openPurchase(); setEditingPurchase((current) => current && { ...current, fund: `socio:${stat.partner.id}` }) }}><ShoppingBag size={15} />Comprar con su dinero</button>
                   <button type="button" className="ghost-button" onClick={() => { setError(''); setEditingExpense({ type: 'socio', description: `Pago a ${stat.partner.name}`, amount: '', partnerId: String(stat.partner.id) }) }}><Wallet size={15} />Registrar pago</button>
