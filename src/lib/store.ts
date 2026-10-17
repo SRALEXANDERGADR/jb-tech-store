@@ -183,10 +183,10 @@ function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const result = await db.execute(sql`select
-        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name = 'partner_id') or (table_name = 'orders' and column_name = 'access_token') or (table_name = 'products' and column_name = 'warranty')))
+        (select count(*) from information_schema.columns where table_schema = current_schema() and ((table_name = 'products' and column_name = 'option_stock') or (table_name = 'purchases' and column_name in ('option', 'fund', 'partner_id')) or (table_name = 'expenses' and column_name in ('partner_id', 'partner_amount')) or (table_name = 'orders' and column_name = 'access_token') or (table_name = 'products' and column_name = 'warranty')))
         + (select count(*) from information_schema.tables where table_schema = current_schema() and table_name in ('push_subscriptions', 'partners')) as n`)
       const rows = ((result as unknown as { rows?: Array<{ n: number | string }> }).rows ?? (result as unknown as Array<{ n: number | string }>)) || []
-      if (Number(rows[0]?.n ?? 0) >= 9) return
+      if (Number(rows[0]?.n ?? 0) >= 10) return
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "option_stock" boolean NOT NULL DEFAULT false`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "option" text NOT NULL DEFAULT ''`)
       await db.execute(sql`ALTER TABLE "purchases" ADD COLUMN IF NOT EXISTS "fund" text NOT NULL DEFAULT 'capital'`)
@@ -196,6 +196,7 @@ function ensureSchema(): Promise<void> {
       await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "partner_id" integer`)
       await db.execute(sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "access_token" text NOT NULL DEFAULT ''`)
       await db.execute(sql`ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "warranty" text NOT NULL DEFAULT ''`)
+      await db.execute(sql`ALTER TABLE "expenses" ADD COLUMN IF NOT EXISTS "partner_amount" integer NOT NULL DEFAULT 0`)
     })().catch((error) => {
       schemaReady = null // se reintenta en la próxima petición
       throw error
@@ -1280,8 +1281,11 @@ export const removePartner = createServerFn({ method: 'POST' }).inputValidator((
 // repartir); 'personal' se resta de lo que ya le corresponde a Yeilin, sin
 // tocar la ganancia del negocio; 'socio' sale de la caja de ese socio
 // (`partnerId`): es dinero que se le entregó.
+// Un retiro personal más grande que «Puedes retirar» puede tomar lo que falta
+// del dinero de un socio: `partnerAmount` (de `partnerId`). Esa parte se resta
+// de la caja del socio, no de «Puedes retirar». El panel calcula cuánto falta.
 export const recordExpense = createServerFn({ method: 'POST' })
-  .inputValidator((data: { type: 'negocio' | 'personal' | 'socio'; description: string; amount: number; partnerId?: number }) => data)
+  .inputValidator((data: { type: 'negocio' | 'personal' | 'socio'; description: string; amount: number; partnerId?: number; partnerAmount?: number }) => data)
   .handler(async ({ data }) => {
     await requireAdmin()
     await ensureSchema()
@@ -1295,8 +1299,46 @@ export const recordExpense = createServerFn({ method: 'POST' })
       await db.insert(expenses).values({ type: 'socio', description, amount, partnerId: partner.id })
       return true
     }
+    const partnerAmount = data.type === 'personal' ? Math.round(Number(data.partnerAmount) || 0) : 0
+    if (partnerAmount < 0 || partnerAmount > amount) throw new Error('Lo que sale del dinero del socio no puede ser más que el retiro.')
+    if (partnerAmount > 0) {
+      const [partner] = await db.select({ id: partners.id }).from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
+      if (!partner) throw new Error('Ese socio ya no existe.')
+      await db.insert(expenses).values({ type: 'personal', description, amount, partnerId: partner.id, partnerAmount })
+      return true
+    }
     await db.insert(expenses).values({ type: data.type === 'personal' ? 'personal' : 'negocio', description, amount })
     return true
+  })
+
+// Para retiros de antes: «Puedes retirar» quedó en negativo porque se sacó
+// más de lo que le tocaba a Yeilin. Pasa esa diferencia (`amount`, que calcula
+// el panel) al dinero del socio: se reparte entre los retiros personales, del
+// más nuevo al más viejo, sin pasar del monto de cada uno.
+export const coverWithdrawalsWithPartner = createServerFn({ method: 'POST' })
+  .inputValidator((data: { partnerId: number; amount: number }) => data)
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    await ensureSchema()
+    let left = Math.round(Number(data.amount) || 0)
+    if (left <= 0) throw new Error('No hay nada que pasar al dinero del socio.')
+    const [partner] = await db.select({ id: partners.id }).from(partners).where(eq(partners.id, Number(data.partnerId))).limit(1)
+    if (!partner) throw new Error('Ese socio ya no existe.')
+    const rows = await db.select().from(expenses).where(eq(expenses.type, 'personal')).orderBy(desc(expenses.createdAt), desc(expenses.id))
+    let covered = 0
+    for (const row of rows) {
+      if (left <= 0) break
+      // Un retiro que ya tiene parte de OTRO socio no se toca.
+      if (row.partnerId && row.partnerId !== partner.id && row.partnerAmount > 0) continue
+      const room = row.amount - Math.max(0, row.partnerAmount)
+      if (room <= 0) continue
+      const take = Math.min(room, left)
+      await db.update(expenses).set({ partnerId: partner.id, partnerAmount: Math.max(0, row.partnerAmount) + take }).where(eq(expenses.id, row.id))
+      left -= take
+      covered += take
+    }
+    if (!covered) throw new Error('No hay retiros personales que se puedan pasar al dinero del socio.')
+    return { covered }
   })
 
 export const deleteExpense = createServerFn({ method: 'POST' }).inputValidator((id: number) => id).handler(async ({ data }) => {

@@ -93,7 +93,7 @@ Cómo está hecho:
   - `gastadoReinv` = compras con `fund = 'reinversion'`; `gastadoCapital` = las demás
   - **Dinero del negocio** = capitalInicial − gastadoCapital + (costo de lo vendido − recuperadoReinv) − gastos del negocio
   - **Dinero para reinvertir** = reinversion − gastadoReinv + recuperadoReinv
-  - **Puedes retirar** = paraTi + gananciaPropia − gastos personales
+  - **Puedes retirar** = paraTi + gananciaPropia + parteDuenaSocios − gastos personales (solo la parte de cada retiro que salió de lo suyo; lo que salió del dinero de un socio se le resta a él)
   - Las tres cajas juntas siempre suman: capital inicial − compras + ventas − gastos.
   - Si se borra un lote de reinversión, su dinero vuelve solo a "Para reinvertir" (baja su `totalCost`).
 - Los lotes y pedidos de antes quedaron como `capital` y sin `reinvCost`, así que sus números no cambiaron.
@@ -104,7 +104,9 @@ Lo pidió Yeilin: "Maria capital 5,000, ventas 10,000: 5 son el capital y los ot
 - En "Reponer", cada socio activo sale como otra opción de dinero: el lote queda con `purchases.fund = 'socio'` y `purchases.partner_id`.
 - Cada línea de pedido guarda `partnerShares: [{ partnerId, qty, cost }]` (como `reinvQty`/`reinvCost`, pero por socio; `cost` es el TOTAL). En `store.ts` todas las cajas se manejan juntas con `Share` (`'reinversion'` o `'socio:<id>'`): `consumeFifoCost`, `returnToFifo`, `shrinkPool`, `withShares`, `lineShares`. Cancelar/reactivar/editar un pedido devuelve cada unidad a su caja.
 - Pagos al socio: `expenses.type = 'socio'` con `expenses.partner_id` ("Registrar pago a …").
-- Cuentas por socio (en `AdminPanel.tsx`): `ganancia = ventas de su mercancía − recuperado`; `parteSocio = ganancia × percent`; el resto (`parteDuena`) va directo a "Puedes retirar" (no se reparte 70/30). **Su dinero ahora** = capital − compras con su dinero + recuperado + parteSocio − pagado. La ganancia de socios NO entra en `gananciaNegocio`, y lo recuperado NO vuelve al dinero del negocio.
+- **Retiros que no caben en «Puedes retirar»** (regla acordada con Yeilin): al registrar un «Gasto o retiro personal», primero sale de «Puedes retirar». Si no alcanza, lo que falta sale de «Su dinero ahora» del socio (el que más tiene, o el que se elija si hay varios). Se guarda en el mismo gasto: `expenses.partner_id` + `expenses.partner_amount` (centavos; columna creada en `ensureSchema`). Si pide más de lo que hay entre lo suyo y lo del socio, el panel no deja guardar y dice cuánto falta: nada se completa solo. Borrar el gasto devuelve todo a su lugar. En Socios sale «Sacaste tú de su dinero». Ejemplo: 1,350 suyos + 1,350 del socio; saca 500 → 850 y 1,350; saca 2,000 → 0 y 700; pide 3,000 → no deja (faltan 300).
+- Retiros de antes de esa regla: si «Puedes retirar» quedó en negativo, Finanzas muestra el botón «Restar RD$X de <socio>» (`coverWithdrawalsWithPartner` en `store.ts`), que pasa esa diferencia a los retiros personales más nuevos.
+- Cuentas por socio (en `AdminPanel.tsx`): `ganancia = ventas de su mercancía − recuperado`; `parteSocio = ganancia × percent`; el resto (`parteDuena`) va directo a "Puedes retirar" (no se reparte 70/30). **Su dinero ahora** = capital − compras con su dinero + recuperado + parteSocio − pagado − lo que Yeilin sacó de su dinero (`partner_amount` de sus retiros). La ganancia de socios NO entra en `gananciaNegocio`, y lo recuperado NO vuelve al dinero del negocio.
 
 ## Otros detalles
 - La sesión del admin dura 12 horas (`SESSION_HOURS` en `src/lib/auth.ts`). Se le ofreció al dueño subirla a 30 días para la app; no ha decidido. No lo cambies sin preguntar.
